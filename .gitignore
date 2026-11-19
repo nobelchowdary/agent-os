@@ -1,0 +1,14 @@
+/bin/
+/data/
+/.local/
+/.tools/
+/.env
+/.env.*
+*.db
+*.db.lock
+*.test
+coverage.out
+.DS_Store
+*.pem
+*.key
+kubeconfig*

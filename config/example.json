@@ -1,0 +1,23 @@
+{
+  "namespace": "agentos-workloads",
+  "runtime_class": "gvisor",
+  "max_active_per_tenant": 4,
+  "max_active_total": 16,
+  "tenants": [{"id": "local", "token_env": "AGENTOS_LOCAL_TOKEN"}],
+  "templates": {
+    "python": {
+      "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+      "command": ["python", "-c", "print('hello from Agent OS')"],
+      "resources": {"cpu_milli": 500, "memory_mib": 256, "disk_mib": 128},
+      "default_timeout_seconds": 60,
+      "max_timeout_seconds": 300
+    },
+    "node": {
+      "image": "node@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5",
+      "command": ["node", "-e", "console.log('hello from Agent OS')"],
+      "resources": {"cpu_milli": 500, "memory_mib": 256, "disk_mib": 128},
+      "default_timeout_seconds": 60,
+      "max_timeout_seconds": 300
+    }
+  }
+}

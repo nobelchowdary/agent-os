@@ -1,0 +1,23 @@
+# Copy this file OUTSIDE deploy/, replace both destinations and the target
+# port using your CNI's service/DNAT behavior, then apply the copy separately.
+# These strings intentionally are not valid CIDRs until edited.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentos-api-kubernetes-egress
+  namespace: agentos-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-os
+      app.kubernetes.io/component: api
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: REPLACE_WITH_KUBERNETES_SERVICE_IP/32
+        - ipBlock:
+            cidr: REPLACE_WITH_CONTROL_PLANE_ENDPOINT_IP/32
+      ports:
+        - protocol: TCP
+          port: 443

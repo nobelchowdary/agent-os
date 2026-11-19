@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: agentos-workloads
+  namespace: agentos-workloads
+spec:
+  hard:
+    requests.cpu: '8'
+    requests.memory: 8Gi
+    limits.cpu: '8'
+    limits.memory: 8Gi
+    pods: '16'
+    count/jobs.batch: '64'
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: agentos-workloads
+  namespace: agentos-workloads
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: '1'
+        memory: 512Mi
+      max:
+        cpu: '2'
+        memory: 2Gi

@@ -1,0 +1,12 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentos-deny-all
+  namespace: agentos-workloads
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: agent-os
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []

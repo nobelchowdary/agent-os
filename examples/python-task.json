@@ -1,0 +1,5 @@
+{
+  "template": "python",
+  "command": ["python", "-c", "import json; print(json.dumps({'squares': [n*n for n in range(8)]}))"],
+  "timeout_seconds": 30
+}

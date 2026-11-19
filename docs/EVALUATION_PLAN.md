@@ -1,0 +1,93 @@
+# Agent OS: evaluation plan
+
+Status: proposed performance experiments as of November 18, 2026. An experimental execution API and contract tests now exist; a performance benchmark harness and live-cluster results do not. All numerical gates below are starting hypotheses to revise with design partners before testing.
+
+## 1. Unit of value
+
+Optimize **cost per successfully completed, policy-compliant task at an agreed latency and recovery target**. Also report failure rate, recovery behavior and operational overhead. A large count of registered or sleeping agents is not evidence of equivalent concurrent execution capacity.
+
+Hold task inputs, artifacts, model configuration, output checks and isolation requirements constant. Reject a claimed efficiency improvement if it comes from omitting work, weakening isolation, or moving costs outside the accounting boundary.
+
+## 2. Baselines
+
+Evaluate the customer's existing deployment plus these reproducible configurations where supported:
+
+| Baseline | Purpose |
+| --- | --- |
+| Ordinary Kubernetes containers | Establish a performance floor; label the different isolation boundary explicitly |
+| Plain gVisor on Kubernetes | Quantify sandbox overhead separately from product overhead |
+| SIG Agent Sandbox + gVisor | Measure the value added above upstream lifecycle and pooling |
+| Ate with its documented sandbox configuration | Compare against an agent-specific runtime, including lifecycle and gateway behavior |
+| Proposed Agent OS configuration | Measure the selected product design and every enabled control |
+
+Managed services can be a separate operational/cost comparison when equivalent workloads and billing evidence are available. Do not pretend different isolation technologies or service responsibilities are identical.
+
+Pin source commits/releases, OCI image digests, Kubernetes, kernel, CNI, runtime and configuration versions. Record node type/count, architecture, storage, region, limits, security policies, active ratio, dataset size, cache state and warm capacity. Document features unavailable on a baseline rather than silently approximating them.
+
+## 3. Workload matrix
+
+1. **Short tools:** deterministic Python and Node commands, small files and many independent tasks.
+2. **Coding workspace:** repository checkout, dependency installation from controlled sources, edits and tests; measure a cached and uncached environment.
+3. **Research:** concurrent retrieval, bounded fan-out and retained evidence; add browser execution only after qualifying its sandbox and network behavior.
+4. **Durable workflow:** multiple steps separated by human/external-event waits, then a worker failure and restart from a declared checkpoint.
+5. **Adverse mix:** CPU-heavy compilation, syscall/file-heavy work, large artifacts and one tenant submitting a burst while another has a small steady workload.
+
+Use a deterministic mock model to isolate infrastructure effects. Run separate real-model evaluations with pinned configurations, repeated trials and output checks. Report provider latency/rate limiting separately from execution overhead. Mark non-deterministic quality differences instead of hiding them in averages.
+
+## 4. Initial engineering gates
+
+| Measurement | Proposed first gate | Required reporting |
+| --- | --- | --- |
+| Warm task readiness | p95 ≤2 seconds for a declared cached image and ready capacity | Authenticated admission to first successful application command; p50/p95/p99, samples, errors and pool size |
+| Cold task readiness | Establish baseline before setting a target | Queueing, image pull, scheduling, sandbox boot, application initialization and first useful result separately |
+| Useful infrastructure cost | Seek ≥30% improvement over the partner's existing idle-heavy deployment | Same workload/SLO/isolation; include warm/idle nodes, control plane, gateways, storage, network and failures; report model bills separately and in total |
+| Mixed fleet | 1,000 registered sessions, 100 active at the declared resource size, for 24 hours | Queue age, throughput, latency, resource pressure, accepted-work accounting and artifacts |
+| Tenant controls | No unauthorized access in the defined conformance cases | Exact cases and environment; passing tests do not prove absence of vulnerabilities |
+| Budget admission | Concurrent requests and child runs cannot exceed the reserved allowance under the declared adapter contract | Reservations, release/reconciliation, retries, provider uncertainty and outage behavior |
+| Recovery | Every injected failure yields a documented terminal or recoverable state | Last durable checkpoint, lost progress, uncertain external actions and measured recovery time |
+
+The cost gate may be unattainable against an already optimized baseline. Report that result and reconsider the efficiency pitch. A product can create operational value without winning every microbenchmark.
+
+Use repeated trials, retain raw measurements and publish scripts/configuration. Keep warm and cold distributions separate. Choose sample sizes sufficient for tail estimates, disclose them, and avoid presenting a p99 from a tiny sample as stable. Never turn one successful run into a scale claim.
+
+## 5. Fault and lifecycle experiments
+
+For each exercise, define expected behavior before running it. Inject failures at important transitions: admission acknowledgment, budget reservation, tool submission, external success before acknowledgment, checkpoint commit and compute release.
+
+| Fault | Expected property |
+| --- | --- |
+| Worker disappears | Accepted work remains accounted for; recovery uses only a committed checkpoint; stale effects are denied |
+| Controller restarts or two reconcilers race | No duplicate authoritative owner; state transitions and budget reservations remain consistent |
+| Network partition | Lease expiry alone is not treated as proof the old executor stopped; the gateway rejects stale actions, and writer fencing or isolated per-attempt storage prevents concurrent workspace corruption |
+| Database, policy or gateway outage | New privileged actions fail closed; bounded local deadlines continue; cancellation and status degrade explicitly |
+| Object store unavailable / partial checkpoint | Incomplete state is never advertised as recoverable; compute is released only after durable commitment |
+| Disk, log or artifact quota exhausted | Controlled failure and cleanup; no node-wide exhaustion caused by unbounded output |
+| Provider 429 / timeout / lost acknowledgment | Bounded retries, no blind repetition of non-idempotent actions, visible uncertain outcome and reconciled budget |
+| Cancellation / permission revocation | New operations are denied; execution stops within the declared bound; already submitted actions are reported |
+| Backup restore / version upgrade | Supported state remains readable; incompatible state is rejected with an actionable status |
+
+Observe CPU/RAM/disk on nodes and trusted components during these exercises. Warm pools and caches must not retain a previous tenant's files, credentials or process state for reassignment.
+
+## 6. Boundary and compatibility checks
+
+Verify the installed boundary rather than the presence of YAML resources:
+
+- Runtime handler selected correctly; unavailable gVisor never falls back to an ordinary container.
+- Workload inputs cannot bypass administrator-owned templates, request privileged execution or host namespaces, mount host paths/runtime sockets, attach arbitrary devices, or obtain an automatic Kubernetes service-account token.
+- Tenant cannot read another tenant's API objects, logs, artifacts, workspace, checkpoint or broker capability.
+- Direct egress, DNS bypass, IPv4/IPv6 paths, metadata, host services, cluster API and peer access match the declared policy on the actual CNI.
+- Unsupported protocols, redirects, destination changes and broker outages cannot bypass the gateway contract.
+- Agents cannot supply trusted lineage, enlarge delegated permissions, reuse approvals for different arguments or replay stale attempt tokens.
+- Concurrent model calls and nested agents share the same applicable budget; accounting failures cannot authorize unlimited new spend.
+- Restoring a checkpoint rechecks current identity/policy, handles expired capabilities and rejects unauthorized or incompatible state.
+- Python/Node tools, package managers and chosen agent integrations work under the required filesystem and network restrictions.
+
+These checks supplement review of trusted gateways and runtime dependencies. An independent security review is a beta gate. Never publish claims such as “no sandbox escapes” based on a conformance suite.
+
+## 7. Evidence required before a public claim
+
+Each published result includes the task, baseline, complete accounting boundary, versions, hardware, security configuration, active/idle ratio, latency distribution, completion rate and a reproducible command or script. Distinguish observed values, estimates and future goals.
+
+Before a pilot, agree with the customer on the failure/recovery contract and target metrics. Before a production SLO, obtain sustained operational data and assign incident response ownership. Before marketing portable memory snapshots, qualify each supported runtime/CPU/network/storage combination.
+
+Relevant primary references: [Ate architecture](https://ate.dev/docs/concepts/architecture/), [SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox), [gVisor performance](https://gvisor.dev/docs/architecture_guide/performance/), [Kubernetes RuntimeClass](https://kubernetes.io/docs/concepts/containers/runtime-class/), [NetworkPolicy](https://kubernetes.io/docs/concepts/services-networking/network-policies/).

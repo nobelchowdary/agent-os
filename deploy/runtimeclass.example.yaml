@@ -1,0 +1,12 @@
+# An example for a cluster administrator, excluded from kustomization.yaml.
+# Install/configure runsc on qualified Linux nodes BEFORE creating this class.
+# Label only tested nodes: kubectl label node NODE agentos.dev/gvisor-ready=true
+# Reuse a correctly installed existing gvisor RuntimeClass instead of replacing it.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+scheduling:
+  nodeSelector:
+    agentos.dev/gvisor-ready: 'true'

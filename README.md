@@ -1,0 +1,55 @@
+# Agent OS
+
+**An experimental sandbox environment for running agent work on Kubernetes.**
+
+Agent OS is being built to give coding agents, research agents, and workflow harnesses a simple, controlled execution environment with predictable resource use and explicit failure handling. The long-term measure is useful work completed reliably per unit of compute and model spend.
+
+This first alpha provides a runnable execution API and constrained Python/Node environments. It is not a Linux distribution, a complete agent framework, or a production-qualified isolation service. “Agent OS” remains a working name; [Agno also uses AgentOS](https://docs.agno.com/agent-os/introduction).
+
+## Available in this version
+
+- Administrator-owned environments with digest-pinned images and fixed CPU, RAM, scratch-space and execution-time settings.
+- Kubernetes Jobs using an explicit gVisor RuntimeClass, non-root processes, read-only root filesystems, dropped capabilities and no workload Kubernetes token.
+- Bearer-token authentication with tenant-scoped create, list, status, bounded logs and cancellation.
+- Durable run records and lifecycle events using transactional embedded storage.
+- Atomic tenant/global admission limits and persistent idempotency keys for duplicate submissions.
+- Suspended Job creation followed by separate activation; ambiguous initial creation does not immediately launch code.
+- Offline environment preview, deployment manifests, a small workload example set and CI checks.
+
+The node runtime and enforcing CNI must be installed and independently qualified. A declared RuntimeClass or NetworkPolicy does not prove isolation. Disk limits depend on kubelet accounting/eviction; PID limits require node configuration. Kubernetes execution can duplicate work under failures, so external effects still need idempotency.
+
+## Try the environment preview
+
+Use Go 1.27.4, or allow the Go toolchain download selected by `go.mod`. From the repository root:
+
+```sh
+export AGENTOS_LOCAL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+make check
+make preview
+```
+
+Preview binds to `127.0.0.1:8080`. It renders the exact initial Job through `POST /v1/plan`; it never executes submitted code or cancels existing runs. See the [getting-started guide](docs/GETTING_STARTED.md) for authenticated requests and installation on a prepared cluster.
+
+```json
+{"template":"python","command":["python","-c","print(sum(range(1000)))"],"timeout_seconds":30}
+```
+
+Submit this shape to `POST /v1/runs` in cluster execution mode. Image, resource limits, mounts, credentials and Pod specifications are not caller-controlled. The optional command executes within the selected environment's restrictions.
+
+## Current boundaries
+
+The API runs as one process/replica with a private bbolt database. Workload files and logs are not durably archived. Failed application work is not automatically retried. Cancellation is asynchronous; disappearing Kubernetes objects cannot prove a partitioned worker physically stopped. Finished Jobs and any late suspended creations need operator housekeeping.
+
+Workload networking is denied by default. A model/tool gateway, provider-spend enforcement, durable workspaces, checkpoint recovery, warm pools and hardware optimization benchmarks are future work. No token savings, density advantage or live-cluster compatibility results are claimed. The local suite verifies contracts, persistence and Kubernetes object behavior using fake/HTTP clients; actual node isolation remains a separate acceptance gate.
+
+## Direction and contribution
+
+- [Getting started](docs/GETTING_STARTED.md): preview, cluster prerequisites, API examples and operational limits.
+- [Architecture decision](docs/decisions/0001-initial-execution-slice.md): the first backend and its scope.
+- [Roadmap](docs/ROADMAP.md): capability gates driven by workload evidence and customer needs.
+- [Original research and product proposal](docs/PROJECT_PLAN.md) and [evaluation plan](docs/EVALUATION_PLAN.md).
+- [Contributing](CONTRIBUTING.md) and [security reporting](SECURITY.md).
+
+Feature proposals should identify a real workload, the current failure or cost, and a measurable acceptance condition. Build a shared execution contract while validating each workload profile independently.
+
+Licensed under [Apache-2.0](LICENSE).

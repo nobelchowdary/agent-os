@@ -1,0 +1,5 @@
+{
+  "template": "python",
+  "command": ["python", "-c", "import time; time.sleep(120)"],
+  "timeout_seconds": 2
+}

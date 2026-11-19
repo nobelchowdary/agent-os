@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agentos-api
+  namespace: agentos-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agentos-workload
+  namespace: agentos-workloads
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agentos-executor
+  namespace: agentos-workloads
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, patch, update, delete]
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [get, list, delete]
+  - apiGroups: ['']
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    resourceNames: [agentos-deny-all]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agentos-executor
+  namespace: agentos-workloads
+subjects:
+  - kind: ServiceAccount
+    name: agentos-api
+    namespace: agentos-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agentos-executor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agentos-runtime-reader
+rules:
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    resourceNames: [gvisor]
+    verbs: [get]
+  - apiGroups: ['']
+    resources: [namespaces]
+    resourceNames: [agentos-workloads]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agentos-runtime-reader
+subjects:
+  - kind: ServiceAccount
+    name: agentos-api
+    namespace: agentos-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agentos-runtime-reader

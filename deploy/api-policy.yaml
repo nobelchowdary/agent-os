@@ -1,0 +1,27 @@
+# API server egress is deliberately incomplete until the cluster-specific
+# Kubernetes API destination is allowed. See networking/ and GETTING_STARTED.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentos-api
+  namespace: agentos-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-os
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
