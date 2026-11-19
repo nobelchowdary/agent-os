@@ -36,6 +36,22 @@ kill "$AGENTOS_PREVIEW_PID"
 wait "$AGENTOS_PREVIEW_PID"
 ```
 
+## Preview using the container image
+
+After building with `make image`, the same API can run in a read-only container. With `AGENTOS_LOCAL_TOKEN` set in your shell:
+
+```sh
+docker run --detach --rm --name agentos-preview \
+  --read-only --cap-drop=ALL --security-opt no-new-privileges \
+  --tmpfs /var/lib/agentos:rw,noexec,nosuid,uid=10001,gid=10001,mode=0700 \
+  --mount "type=bind,source=$(pwd)/config/example.json,target=/etc/agentos/config.json,readonly" \
+  --env AGENTOS_LOCAL_TOKEN --publish 127.0.0.1:8080:8080 \
+  agent-os:dev --preview --config=/etc/agentos/config.json \
+  --db=/var/lib/agentos/state/runs.db --listen=:8080
+```
+
+Use the authenticated preview requests above from the same shell, then run `docker stop agentos-preview`. This preview has no Kubernetes connection; its temporary database disappears when the container is removed. The image runs as UID/GID 10001. The container preview and local preview are alternatives and cannot bind the same host port at once.
+
 ## Prepare a cluster for actual execution
 
 Use a disposable development cluster first. You need:
