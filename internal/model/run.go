@@ -23,14 +23,24 @@ type Resources struct {
 	DiskMiB   int64 `json:"disk_mib"`
 }
 
+// RuntimeProfile is resolved from administrator configuration, never caller
+// input. Its fields are persisted with the run and included in idempotency.
+// A nil profile on an older Spec means the original gVisor/runsc contract.
+type RuntimeProfile struct {
+	Kind            string `json:"kind"`
+	RuntimeClass    string `json:"runtime_class"`
+	RequiredHandler string `json:"required_handler"`
+}
+
 // Spec is resolved from an administrator-owned template, never a caller PodSpec.
 type Spec struct {
-	Template       string    `json:"template"`
-	Image          string    `json:"image"`
-	RuntimeClass   string    `json:"runtime_class"`
-	Command        []string  `json:"command"`
-	Resources      Resources `json:"resources"`
-	TimeoutSeconds int64     `json:"timeout_seconds"`
+	Template       string          `json:"template"`
+	Image          string          `json:"image"`
+	RuntimeClass   string          `json:"runtime_class"`
+	RuntimeProfile *RuntimeProfile `json:"runtime_profile,omitempty"`
+	Command        []string        `json:"command"`
+	Resources      Resources       `json:"resources"`
+	TimeoutSeconds int64           `json:"timeout_seconds"`
 }
 
 type CreateRequest struct {

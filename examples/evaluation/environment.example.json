@@ -1,0 +1,16 @@
+{
+  "format_version": 1,
+  "provider": "aws-eks",
+  "region": "RECORD_ACTUAL_REGION",
+  "kubernetes_version": "RECORD_ACTUAL_VERSION",
+  "worker_instance_type": "RECORD_ACTUAL_TYPE",
+  "worker_count": 1,
+  "node_image": "RECORD_ACTUAL_IMAGE",
+  "kernel_version": "RECORD_ACTUAL_VERSION",
+  "containerd_version": "RECORD_ACTUAL_VERSION",
+  "runtime_build": "RECORD_ACTUAL_BUILD",
+  "cni_build_and_policy_mode": "RECORD_ACTUAL_CONFIGURATION",
+  "fixed_node_pool": true,
+  "cache_condition": "uncontrolled",
+  "qualification_record": "RECORD_PRIVATE_DYNAMIC_CONFORMANCE_PATH"
+}

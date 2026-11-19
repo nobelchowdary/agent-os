@@ -1,0 +1,26 @@
+{
+  "format_version": 1,
+  "template": "python",
+  "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+  "command": [
+    "python",
+    "-u",
+    "-c",
+    "import hashlib,pathlib\nprint('AGENTOS_EVAL_READY v1',flush=True)\ndata=b'agentos-evaluation-v1\\n'*10000\np=pathlib.Path('/workspace/proof.bin')\np.write_bytes(data)\nassert p.read_bytes()==data\ntotal=sum(i*i for i in range(100000))\nproof=hashlib.sha256(p.read_bytes()+str(total).encode()).hexdigest()\nprint('AGENTOS_EVAL_COMPLETE '+proof,flush=True)"
+  ],
+  "resources": {
+    "cpu_milli": 500,
+    "memory_mib": 256,
+    "disk_mib": 128
+  },
+  "timeout_seconds": 30,
+  "runtime_profile": {
+    "kind": "gvisor",
+    "runtime_class": "gvisor",
+    "required_handler": "runsc"
+  },
+  "validation": {
+    "ready_line": "AGENTOS_EVAL_READY v1",
+    "complete_line": "AGENTOS_EVAL_COMPLETE e36c335e3e489389b3a7b134f34f27475d619de02618635ce3671b54e4ef7825"
+  }
+}

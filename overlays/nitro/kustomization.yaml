@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../deploy
+patches:
+  - target:
+      group: rbac.authorization.k8s.io
+      version: v1
+      kind: ClusterRole
+      name: agentos-runtime-reader
+    patch: |-
+      - op: replace
+        path: /rules/0/resourceNames
+        value: [isolated-sandbox]
+  - target:
+      version: v1
+      kind: ResourceQuota
+      name: agentos-workloads
+      namespace: agentos-workloads
+    patch: |-
+      - op: replace
+        path: /spec/hard/requests.cpu
+        value: '16'
+      - op: replace
+        path: /spec/hard/limits.cpu
+        value: '16'
+      - op: replace
+        path: /spec/hard/requests.memory
+        value: 12Gi
+      - op: replace
+        path: /spec/hard/limits.memory
+        value: 12Gi

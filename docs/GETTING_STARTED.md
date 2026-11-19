@@ -54,6 +54,8 @@ Use the authenticated preview requests above from the same shell, then run `dock
 
 ## Prepare a cluster for actual execution
 
+The requirements below describe the default gVisor profile. An explicit [Nitro isolated profile](#aws-nitro-isolated-profile) is also available for AWS's supported infrastructure. Neither profile has live-cluster qualification results yet. See the [evaluation runbook](EVALUATION_RUNBOOK.md) before collecting performance evidence.
+
 Use a disposable development cluster first. You need:
 
 - A Linux Kubernetes environment compatible with the client libraries in `go.mod`, and administrative access for the initial namespace, RBAC, and policy installation. No cluster compatibility matrix has been certified yet.
@@ -173,3 +175,21 @@ For a database backup, stop admission, let active executions finish or cancel th
 Updating a ConfigMap or Secret does not reload the running process. Validate the new configuration, update it, and restart the single API deployment during a maintenance window. Treat changes to images or resource/deadline defaults as new template versions when clients depend on idempotent requests.
 
 There is no enforced model-spend budget, outbound model/tool gateway, warm pool, checkpoint integration, durable workspace, or measured density/token-cost improvement yet. See [ROADMAP.md](ROADMAP.md) for the next capability gates and [SECURITY.md](../SECURITY.md) for the current trust boundary.
+
+## AWS Nitro isolated profile
+
+Use `config/nitro-isolated.example.json` as the administrator configuration. It selects only `isolated-sandbox` with the matching handler; callers still submit the same bounded task request. `config/gvisor.example.json` demonstrates the explicit gVisor profile, while `config/example.json` retains legacy compatibility.
+
+Preview the Nitro Job locally with the API token already set:
+
+```sh
+./bin/agentos --preview --config=config/nitro-isolated.example.json --db=data/nitro-preview.db
+```
+
+The rendered workload has the NIC-disabled annotation, required Nitro placement and memory-backed scratch. Preview does not install or verify Nitro. The runtime checks declared RuntimeClass guest-memory/slot overhead; actual supported EC2 hardware, AWS runtime/guest versions, node configuration and policy behavior remain operator prerequisites. Scratch consumes the workload's RAM allowance and can cause OOM; guest overhead consumes additional node capacity. [AWS setup](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-isolated-setup.html), [limitations](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-limitations.html)
+
+For a prepared Nitro cluster, create the administrator ConfigMap from the Nitro file instead of the default file and use `kubectl apply -k overlays/nitro`. That overlay grants named RuntimeClass reads for `isolated-sandbox` only and sizes workload quotas for the example profile's guest overhead. It does not create AWS runtime resources or change cluster networking. Image publishing, API secrets/PVC and cluster-specific API egress from the installation steps still apply.
+
+This profile deliberately runs offline tasks. AWS's isolated mode otherwise permits networking and metadata; the fixed annotation removes its network device. Logs/control use vsock, which remains part of the trust boundary. Confidential mode and attestation are separate capabilities. [AWS network behavior](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-network-isolation.html)
+
+Complete/cancel active work before changing profiles; preserve the database and collected logs. A persisted run cannot be resumed under a different profile. There is no automatic runtime fallback.

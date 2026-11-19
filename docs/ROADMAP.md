@@ -4,6 +4,10 @@ The direction is an open-source environment for coding agents, research agents, 
 
 The first alpha deliberately covers bounded commands. Its checks exercise code and mocked Kubernetes behavior; live runtime/CNI qualification and production operation remain separate gates. The dates and cost assumptions in [PROJECT_PLAN.md](PROJECT_PLAN.md) remain planning estimates, not promised releases.
 
+The November 19 [capability comparison](ALPHA_CAPABILITY_MAP.md) keeps execution economics and cross-runtime controls under investigation. The founder can provide EKS; the [first evaluation brief](EKS_EVALUATION_BRIEF.md) sequences cluster qualification, matched overhead measurements and assessment of upstream recovery. Explore OpenShell and Agent Substrate before expanding custom lifecycle or gateway code. No pivot or efficiency result has been established.
+
+Implemented for that milestone: administrator-owned gVisor/offline Nitro profiles, declaration inventory, Substrate continuity smoke, registered cold execution collection, node resource sampling, operator-effort journals and decision gates. [Runbook](EVALUATION_RUNBOOK.md). Live qualification, resident warm-pool performance and disruptive/cross-instance recovery remain unmeasured. Upstream compatibility notes and concrete reproductions are required outputs even if no product advantage appears.
+
 | Stage | Capability | Evidence required before expanding |
 | --- | --- | --- |
 | First alpha | Authenticated tenant API; administrator-owned Python/Node templates; bounded Jobs requiring gVisor; default-deny workload policy prerequisite; admission limits; idempotent submission; persisted run metadata; status/cancel/log access; local Job preview | Automated contract tests, source checks, reproducible build instructions; no claim of live-cluster qualification |

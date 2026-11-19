@@ -117,7 +117,18 @@ func TestTenantBoundaryAndDurableIdempotency(t *testing.T) {
 func TestRejectsPodSpecBypassAndMalformedBodies(t *testing.T) {
 	s := testServer(t)
 	token := strings.Repeat("a", 32)
-	for _, body := range []string{`{"template":"python","image":"evil"}`, `{"template":"python","tenant_id":"bob"}`, `{"template":"python","resources":{"cpu_milli":64000}}`, `{"template":"python","timeout_seconds":301}`, `{"template":"python"} {}`, `{"template":"missing"}`, `{"template":"python","command":[""]}`, strings.Repeat("x", 40000)} {
+	for _, body := range []string{
+		`{"template":"python","image":"evil"}`,
+		`{"template":"python","runtime_class":"runc"}`,
+		`{"template":"python","runtime_profile":{"kind":"aws-nitro-isolated","runtime_class":"isolated-sandbox","required_handler":"isolated-sandbox"}}`,
+		`{"template":"python","tenant_id":"bob"}`,
+		`{"template":"python","resources":{"cpu_milli":64000}}`,
+		`{"template":"python","timeout_seconds":301}`,
+		`{"template":"python"} {}`,
+		`{"template":"missing"}`,
+		`{"template":"python","command":[""]}`,
+		strings.Repeat("x", 40000),
+	} {
 		if w := request(s, "POST", "/v1/runs", token, "", body); w.Code != 400 {
 			t.Fatalf("body %.80s: %d %s", body, w.Code, w.Body.String())
 		}

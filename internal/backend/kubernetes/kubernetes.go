@@ -35,6 +35,8 @@ const (
 	PartOfLabel                  = "app.kubernetes.io/part-of"
 	DenyAllPolicy                = "agentos-deny-all"
 	WorkloadServiceAccount       = "agentos-workload"
+	NitroNetworkAnnotation       = "sandbox.amazonaws.com/network-isolated"
+	NitroResource                = "eks.amazonaws.com/nitro-sandbox"
 	maxLogBytes            int64 = 1 << 20
 )
 
@@ -46,6 +48,7 @@ type Backend struct {
 	client       kubernetes.Interface
 	namespace    string
 	runtimeClass string
+	profile      model.RuntimeProfile
 }
 
 var _ backend.Backend = (*Backend)(nil)
@@ -55,16 +58,36 @@ var _ backend.Backend = (*Backend)(nil)
 // Ready checks prerequisites. An explicit sandbox RuntimeClass is mandatory: no fallback to
 // the node's default container runtime is attempted.
 func New(client kubernetes.Interface, namespace, runtimeClass string) (*Backend, error) {
+	return NewWithProfile(client, namespace, model.RuntimeProfile{Kind: "gvisor", RuntimeClass: runtimeClass, RequiredHandler: "runsc"})
+}
+
+// NewWithProfile accepts a complete administrator-owned runtime contract. It
+// checks declarations, not the actual node runtime, CNI, hardware or AWS setup.
+// Nitro is isolated mode only, with its trusted-parent and vsock limitations;
+// this does not configure or qualify the required AWS infrastructure.
+func NewWithProfile(client kubernetes.Interface, namespace string, profile model.RuntimeProfile) (*Backend, error) {
 	if client != nil && reflect.ValueOf(client).Kind() == reflect.Ptr && reflect.ValueOf(client).IsNil() {
 		client = nil
 	}
 	if len(validation.IsDNS1123Label(namespace)) != 0 {
 		return nil, errors.New("a valid workload namespace is required")
 	}
-	if len(validation.IsDNS1123Subdomain(runtimeClass)) != 0 || ordinaryRuntime(runtimeClass) {
+	if len(validation.IsDNS1123Subdomain(profile.RuntimeClass)) != 0 || ordinaryRuntime(profile.RuntimeClass) {
 		return nil, errors.New("an explicit sandbox RuntimeClass is required")
 	}
-	return &Backend{client: client, namespace: namespace, runtimeClass: runtimeClass}, nil
+	switch profile.Kind {
+	case "gvisor":
+		if profile.RequiredHandler != "runsc" || profile.RuntimeClass == "isolated-sandbox" || profile.RuntimeClass == "confidential-sandbox" {
+			return nil, errors.New("gvisor profile requires a dedicated RuntimeClass and runsc handler")
+		}
+	case "aws-nitro-isolated":
+		if profile.RuntimeClass != "isolated-sandbox" || profile.RequiredHandler != "isolated-sandbox" {
+			return nil, errors.New("aws-nitro-isolated profile requires isolated-sandbox RuntimeClass and handler")
+		}
+	default:
+		return nil, errors.New("unsupported execution runtime profile")
+	}
+	return &Backend{client: client, namespace: namespace, runtimeClass: profile.RuntimeClass, profile: profile}, nil
 }
 
 func ordinaryRuntime(name string) bool {
@@ -91,8 +114,16 @@ func (b *Backend) Ready(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("sandbox RuntimeClass: %w", err)
 	}
-	if rc.Handler != "runsc" {
-		return errors.New("RuntimeClass must select the qualified runsc handler")
+	if rc.Handler != b.profile.RequiredHandler {
+		return errors.New("RuntimeClass handler differs from the administrator-owned runtime profile")
+	}
+	if b.profile.Kind == "aws-nitro-isolated" {
+		// AWS's documented RuntimeClass reserves a sandbox slot plus 256 MiB
+		// guest overhead and selects sandbox-capable nodes. Actual capacity,
+		// EnclaveOptions, kernel and matched guest/runtime binaries need QA.
+		if rc.Overhead == nil || !validNitroOverhead(rc.Overhead.PodFixed) || rc.Scheduling == nil || rc.Scheduling.NodeSelector[NitroResource] != "true" {
+			return errors.New("Nitro RuntimeClass requires sandbox node selection and declared memory/slot overhead")
+		}
 	}
 	policy, err := b.client.NetworkingV1().NetworkPolicies(b.namespace).Get(ctx, DenyAllPolicy, metav1.GetOptions{})
 	if err != nil {
@@ -119,6 +150,12 @@ func (b *Backend) Ready(ctx context.Context) error {
 	return nil
 }
 
+func validNitroOverhead(overhead corev1.ResourceList) bool {
+	memory := overhead[corev1.ResourceMemory]
+	slots := overhead[corev1.ResourceName(NitroResource)]
+	return memory.Cmp(resource.MustParse("256Mi")) >= 0 && slots.Cmp(resource.MustParse("1")) == 0
+}
+
 func jobName(id string) (string, error) {
 	if len(id) > 54 || len(validation.IsDNS1123Label(id)) != 0 {
 		return "", errors.New("invalid run ID")
@@ -134,14 +171,22 @@ func specHash(run model.Record) (string, error) {
 	// Tenant ownership is part of idempotency, although tenant IDs are not exposed
 	// in Kubernetes labels. A reused ID cannot silently adopt another tenant's run.
 	encoded, err := json.Marshal(struct {
-		Tenant string
-		Spec   model.Spec
-	}{run.TenantID, run.Spec})
+		Tenant             string
+		Spec               model.Spec
+		RuntimeAnnotations map[string]string `json:",omitempty"`
+	}{run.TenantID, run.Spec, runtimeAnnotations(run.Spec)})
 	if err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func runtimeAnnotations(spec model.Spec) map[string]string {
+	if spec.RuntimeProfile != nil && spec.RuntimeProfile.Kind == "aws-nitro-isolated" {
+		return map[string]string{NitroNetworkAnnotation: "true"}
+	}
+	return nil
 }
 
 // Render produces the same validated Job used by Submit, without cluster access.
@@ -154,11 +199,21 @@ func (b *Backend) Render(run model.Record) (*batchv1.Job, error) {
 	if s.RuntimeClass != b.runtimeClass {
 		return nil, errors.New("run RuntimeClass differs from configured sandbox RuntimeClass")
 	}
+	if s.RuntimeProfile == nil {
+		if b.profile.Kind != "gvisor" {
+			return nil, errors.New("legacy run without a persisted runtime profile is gVisor-only")
+		}
+	} else if *s.RuntimeProfile != b.profile {
+		return nil, errors.New("persisted runtime profile differs from administrator configuration")
+	}
 	if strings.TrimSpace(s.Image) == "" || len(s.Command) == 0 || s.Command[0] == "" {
 		return nil, errors.New("resolved image and command are required")
 	}
 	if s.Resources.CPUMilli <= 0 || s.Resources.MemoryMiB <= 0 || s.Resources.DiskMiB < 2 || s.TimeoutSeconds <= 0 {
 		return nil, errors.New("positive CPU, memory, disk (at least 2 MiB) and timeout bounds are required")
+	}
+	if b.profile.Kind == "aws-nitro-isolated" && s.Resources.DiskMiB >= s.Resources.MemoryMiB {
+		return nil, errors.New("Nitro memory-backed scratch must be smaller than the workload memory limit")
 	}
 	hash, err := specHash(run)
 	if err != nil {
@@ -177,7 +232,7 @@ func (b *Backend) Render(run model.Record) (*batchv1.Job, error) {
 	limits := corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: mem, corev1.ResourceEphemeralStorage: disk}
 	fsPolicy := corev1.FSGroupChangeOnRootMismatch
 	suspended := true
-	return &batchv1.Job{
+	job := &batchv1.Job{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "batch/v1", Kind: "Job"},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: b.namespace, Labels: ownedLabels(run.ID), Annotations: map[string]string{SpecHashAnnotation: hash}},
 		Spec: batchv1.JobSpec{
@@ -199,7 +254,20 @@ func (b *Backend) Render(run model.Record) (*batchv1.Job, error) {
 				},
 			},
 		},
-	}, nil
+	}
+	if b.profile.Kind == "aws-nitro-isolated" {
+		// AWS isolated mode permits metadata and Pod Identity by default. Remove
+		// the NIC explicitly. Logs/control still use vsock; see AWS's documented
+		// trusted-parent/vsock caveat before treating this as an isolation claim.
+		job.Spec.Template.Annotations = runtimeAnnotations(s)
+		job.Spec.Template.Spec.NodeSelector = map[string]string{NitroResource: "true"}
+		// Nitro's guest-backed disk usage is invisible to kubelet accounting.
+		// Use bounded tmpfs scratch charged to the workload's memory limit.
+		for i := range job.Spec.Template.Spec.Volumes {
+			job.Spec.Template.Spec.Volumes[i].EmptyDir.Medium = corev1.StorageMediumMemory
+		}
+	}
+	return job, nil
 }
 
 // Submit stages a suspended Job and never activates it. The caller must persist
@@ -303,6 +371,11 @@ func (b *Backend) Activate(ctx context.Context, run model.Record) error {
 // generated selectors/labels and harmless Pod scheduling defaults.
 func sameExecution(got, want *batchv1.Job) bool {
 	g, w := got.Spec, want.Spec
+	for key, value := range want.Annotations {
+		if got.Annotations[key] != value {
+			return false
+		}
+	}
 	if !reflect.DeepEqual(g.BackoffLimit, w.BackoffLimit) || !reflect.DeepEqual(g.ActiveDeadlineSeconds, w.ActiveDeadlineSeconds) || !reflect.DeepEqual(g.Parallelism, w.Parallelism) || !reflect.DeepEqual(g.Completions, w.Completions) || (g.ManualSelector != nil && *g.ManualSelector) || g.TTLSecondsAfterFinished != nil {
 		return false
 	}
@@ -311,6 +384,30 @@ func sameExecution(got, want *batchv1.Job) bool {
 		return false
 	}
 	if p.ServiceAccountName != q.ServiceAccountName || p.RestartPolicy != q.RestartPolicy || !reflect.DeepEqual(p.RuntimeClassName, q.RuntimeClassName) || !reflect.DeepEqual(p.AutomountServiceAccountToken, q.AutomountServiceAccountToken) || !apiequality.Semantic.DeepEqual(p.SecurityContext, q.SecurityContext) || !apiequality.Semantic.DeepEqual(p.Containers, q.Containers) || !apiequality.Semantic.DeepEqual(p.Volumes, q.Volumes) {
+		return false
+	}
+	for key, value := range q.NodeSelector {
+		if p.NodeSelector[key] != value {
+			return false
+		}
+	}
+	for key, value := range w.Template.Annotations {
+		if g.Template.Annotations[key] != value {
+			return false
+		}
+	}
+	// Do not allow provider-control annotations to be injected or changed by
+	// admission. In particular, network-isolated must not become false.
+	for key, value := range g.Template.Annotations {
+		if strings.HasPrefix(key, "sandbox.amazonaws.com/") {
+			if expected, ok := w.Template.Annotations[key]; !ok || expected != value {
+				return false
+			}
+		}
+	}
+	// RuntimeClass admission normally mutates Pods, not Job templates. If an
+	// admission webhook also copies Nitro overhead here, require safe values.
+	if w.Template.Annotations[NitroNetworkAnnotation] == "true" && len(p.Overhead) != 0 && !validNitroOverhead(p.Overhead) {
 		return false
 	}
 	for key, value := range want.Labels {

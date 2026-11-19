@@ -69,7 +69,11 @@ func run() error {
 			return err
 		}
 	}
-	b, err := kubebackend.New(client, cfg.Namespace, cfg.RuntimeClass)
+	profile, err := cfg.ResolvedRuntimeProfile()
+	if err != nil {
+		return err
+	}
+	b, err := kubebackend.NewWithProfile(client, cfg.Namespace, profile)
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,11 @@
+{
+  "format_version": 1,
+  "experiment_id": "eks-first-comparison",
+  "baseline": "agent-sandbox",
+  "candidate": "agentos",
+  "minimum_trials": 30,
+  "minimum_correct_fraction": 1.0,
+  "max_p95_latency_ratio": 1.1,
+  "min_cost_improvement_fraction": 0.2,
+  "min_operator_improvement_fraction": 0.25
+}

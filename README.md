@@ -9,12 +9,13 @@ This first alpha provides a runnable execution API and constrained Python/Node e
 ## Available in this version
 
 - Administrator-owned environments with digest-pinned images and fixed CPU, RAM, scratch-space and execution-time settings.
-- Kubernetes Jobs using an explicit gVisor RuntimeClass, non-root processes, read-only root filesystems, dropped capabilities and no workload Kubernetes token.
+- Kubernetes Jobs with an administrator-selected gVisor or AWS Nitro isolated profile, non-root processes, read-only root filesystems, dropped capabilities and no workload Kubernetes token. Runtime profiles remain unqualified on live nodes.
 - Bearer-token authentication with tenant-scoped create, list, status, bounded logs and cancellation.
 - Durable run records and lifecycle events using transactional embedded storage.
 - Atomic tenant/global admission limits and persistent idempotency keys for duplicate submissions.
 - Suspended Job creation followed by separate activation; ambiguous initial creation does not immediately launch code.
 - Offline environment preview, deployment manifests, a small workload example set and CI checks.
+- Opt-in cluster preflight, registered comparison tooling, node resource sampling, operator-effort journaling and decision reports. Cloud resources are never provisioned by these tools.
 
 The node runtime and enforcing CNI must be installed and independently qualified. A declared RuntimeClass or NetworkPolicy does not prove isolation. Disk limits depend on kubelet accounting/eviction; PID limits require node configuration. Kubernetes execution can duplicate work under failures, so external effects still need idempotency.
 
@@ -40,13 +41,15 @@ Submit this shape to `POST /v1/runs` in cluster execution mode. Image, resource 
 
 The API runs as one process/replica with a private bbolt database. Workload files and logs are not durably archived. Failed application work is not automatically retried. Cancellation is asynchronous; disappearing Kubernetes objects cannot prove a partitioned worker physically stopped. Finished Jobs and any late suspended creations need operator housekeeping.
 
-Workload networking is denied by default. A model/tool gateway, provider-spend enforcement, durable workspaces, checkpoint recovery, warm pools and hardware optimization benchmarks are future work. No token savings, density advantage or live-cluster compatibility results are claimed. The local suite verifies contracts, persistence and Kubernetes object behavior using fake/HTTP clients; actual node isolation remains a separate acceptance gate.
+Workload networking is denied by default; the Nitro profile also requests a NIC-free guest and uses memory-backed scratch. Its trusted-parent/vsock and memory limits require separate qualification. A model/tool gateway, provider-spend enforcement, durable workspaces, integrated checkpoint recovery and Agent OS warm pools are future work. Evaluation tooling exists; no token savings, density advantage or live-cluster compatibility results are claimed. The local suite verifies contracts, persistence, object behavior and evidence handling with fake clients; actual node isolation remains a separate acceptance gate.
 
 ## Direction and contribution
 
 - [Getting started](docs/GETTING_STARTED.md): preview, cluster prerequisites, API examples and operational limits.
 - [Architecture decision](docs/decisions/0001-initial-execution-slice.md): the first backend and its scope.
 - [Roadmap](docs/ROADMAP.md): capability gates driven by workload evidence and customer needs.
+- [Alpha capability map](docs/ALPHA_CAPABILITY_MAP.md), [EKS evaluation brief](docs/EKS_EVALUATION_BRIEF.md), and [product-direction review](docs/PRODUCT_DIRECTION_REVIEW.md): current evidence and experiments before choosing a broader product.
+- [Evaluation runbook](docs/EVALUATION_RUNBOOK.md): executable preflight, comparison, operator records and preregistered decision gates; [runtime profile decision](docs/decisions/0002-runtime-profiles-and-evidence.md).
 - [Original research and product proposal](docs/PROJECT_PLAN.md) and [evaluation plan](docs/EVALUATION_PLAN.md).
 - [Contributing](CONTRIBUTING.md) and [security reporting](SECURITY.md).
 

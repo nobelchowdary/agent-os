@@ -1,6 +1,8 @@
 # Agent OS: evaluation plan
 
-Status: proposed performance experiments as of November 18, 2026. An experimental execution API and contract tests now exist; a performance benchmark harness and live-cluster results do not. All numerical gates below are starting hypotheses to revise with design partners before testing.
+Status: proposed performance experiments, updated November 19, 2026. Execution, comparison and compatibility-smoke tooling exists; live-cluster results do not. All numerical gates below are starting hypotheses to revise with design partners before registration/testing. The executable workflow is in [EVALUATION_RUNBOOK.md](EVALUATION_RUNBOOK.md).
+
+November 19 update: EKS is the first available pilot environment. Follow the [EKS evaluation brief](EKS_EVALUATION_BRIEF.md) and [current capability map](ALPHA_CAPABILITY_MAP.md). First qualify and measure existing execution; compare upstream implementations before building idle-memory recovery or another policy gateway.
 
 ## 1. Unit of value
 
@@ -16,13 +18,17 @@ Evaluate the customer's existing deployment plus these reproducible configuratio
 | --- | --- |
 | Ordinary Kubernetes containers | Establish a performance floor; label the different isolation boundary explicitly |
 | Plain gVisor on Kubernetes | Quantify sandbox overhead separately from product overhead |
-| SIG Agent Sandbox + gVisor | Measure the value added above upstream lifecycle and pooling |
-| Ate with its documented sandbox configuration | Compare against an agent-specific runtime, including lifecycle and gateway behavior |
+| AWS EKS Agent Sandbox blueprint, with upstream gVisor controller and separately declared cold/warm configurations | Primary upstream reference; include preparation and idle warm-capacity cost. The current collector implements cold claims only |
+| AWS Nitro isolated sandbox profile | Explicit hardware-isolation arm with its own placement, scratch and network contract; never silently relabel it gVisor |
+| Agent Substrate (Ate), using its documented gVisor worker configuration | Test existing actor/worker pooling and checkpoint/restore on EKS; do not assume non-GKE memory recovery is absent |
+| OpenShell on Kubernetes / Agent Sandbox | Compare policy, credential and operational behavior; distinguish lifecycle APIs from operations implemented by the selected driver |
 | Proposed Agent OS configuration | Measure the selected product design and every enabled control |
 
 Managed services can be a separate operational/cost comparison when equivalent workloads and billing evidence are available. Do not pretend different isolation technologies or service responsibilities are identical.
 
 Pin source commits/releases, OCI image digests, Kubernetes, kernel, CNI, runtime and configuration versions. Record node type/count, architecture, storage, region, limits, security policies, active ratio, dataset size, cache state and warm capacity. Document features unavailable on a baseline rather than silently approximating them.
+
+Start on EKS with one qualified configuration. Add GKE later to compare provider-specific snapshot facilities; report provider support separately from portable runtime mechanisms. Reproduce any claimed Substrate recovery or efficiency result on the selected EKS stack. OpenShell is also a proposed integration for the control experiment, not an integration already implemented by this repository.
 
 ## 3. Workload matrix
 

@@ -31,12 +31,13 @@ type Template struct {
 }
 
 type Config struct {
-	Namespace          string              `json:"namespace"`
-	RuntimeClass       string              `json:"runtime_class"`
-	MaxActivePerTenant int                 `json:"max_active_per_tenant"`
-	MaxActiveTotal     int                 `json:"max_active_total"`
-	Tenants            []Tenant            `json:"tenants"`
-	Templates          map[string]Template `json:"templates"`
+	Namespace          string                `json:"namespace"`
+	RuntimeClass       string                `json:"runtime_class,omitempty"`
+	RuntimeProfile     *model.RuntimeProfile `json:"runtime_profile,omitempty"`
+	MaxActivePerTenant int                   `json:"max_active_per_tenant"`
+	MaxActiveTotal     int                   `json:"max_active_total"`
+	Tenants            []Tenant              `json:"tenants"`
+	Templates          map[string]Template   `json:"templates"`
 }
 
 var name = regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$|^[a-z]$`)
@@ -62,8 +63,12 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if !name.MatchString(c.Namespace) || !name.MatchString(c.RuntimeClass) || c.RuntimeClass == "runc" || c.RuntimeClass == "default" {
-		return errors.New("explicit namespace and sandbox RuntimeClass required")
+	if !name.MatchString(c.Namespace) {
+		return errors.New("explicit workload namespace required")
+	}
+	profile, err := c.ResolvedRuntimeProfile()
+	if err != nil {
+		return err
 	}
 	if c.MaxActivePerTenant < 1 || c.MaxActiveTotal < c.MaxActivePerTenant || c.MaxActiveTotal > 64 {
 		return errors.New("invalid admission limits (maximum total 64 in this alpha)")
@@ -85,6 +90,9 @@ func (c Config) Validate() error {
 		if t.Resources.CPUMilli < 1 || t.Resources.CPUMilli > 64000 || t.Resources.MemoryMiB < 16 || t.Resources.MemoryMiB > 65536 || t.Resources.DiskMiB < 16 || t.Resources.DiskMiB > 65536 {
 			return fmt.Errorf("template %q resources out of supported range", id)
 		}
+		if profile.Kind == "aws-nitro-isolated" && t.Resources.DiskMiB >= t.Resources.MemoryMiB {
+			return fmt.Errorf("template %q Nitro memory-backed scratch must be smaller than its memory limit", id)
+		}
 		if t.DefaultTimeoutSeconds < 1 || t.MaxTimeoutSeconds < t.DefaultTimeoutSeconds || t.MaxTimeoutSeconds > 86400 {
 			return fmt.Errorf("template %q has invalid time limits", id)
 		}
@@ -93,6 +101,35 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// ResolvedRuntimeProfile validates the complete administrator-owned runtime
+// selection. Legacy runtime_class retains the original gVisor/runsc semantics.
+// No provider name or ordinary container handler can select another boundary.
+func (c Config) ResolvedRuntimeProfile() (model.RuntimeProfile, error) {
+	if c.RuntimeProfile != nil && c.RuntimeClass != "" {
+		return model.RuntimeProfile{}, errors.New("configure runtime_profile or legacy runtime_class, not both")
+	}
+	p := model.RuntimeProfile{Kind: "gvisor", RuntimeClass: c.RuntimeClass, RequiredHandler: "runsc"}
+	if c.RuntimeProfile != nil {
+		p = *c.RuntimeProfile
+	}
+	if !name.MatchString(p.RuntimeClass) {
+		return model.RuntimeProfile{}, errors.New("an explicit sandbox RuntimeClass is required")
+	}
+	switch p.Kind {
+	case "gvisor":
+		if p.RequiredHandler != "runsc" || p.RuntimeClass == "runc" || p.RuntimeClass == "runc-v2" || p.RuntimeClass == "default" || p.RuntimeClass == "crun" || p.RuntimeClass == "isolated-sandbox" || p.RuntimeClass == "confidential-sandbox" {
+			return model.RuntimeProfile{}, errors.New("gvisor profile requires a dedicated RuntimeClass and runsc handler")
+		}
+	case "aws-nitro-isolated":
+		if p.RuntimeClass != "isolated-sandbox" || p.RequiredHandler != "isolated-sandbox" {
+			return model.RuntimeProfile{}, errors.New("aws-nitro-isolated profile requires isolated-sandbox RuntimeClass and handler")
+		}
+	default:
+		return model.RuntimeProfile{}, errors.New("unsupported execution runtime profile")
+	}
+	return p, nil
 }
 
 func (c Config) Principals(lookup func(string) string) ([]Principal, error) {
@@ -119,6 +156,10 @@ func (c Config) Principals(lookup func(string) string) ([]Principal, error) {
 }
 
 func (c Config) Resolve(req model.CreateRequest) (model.Spec, error) {
+	profile, err := c.ResolvedRuntimeProfile()
+	if err != nil {
+		return model.Spec{}, err
+	}
 	t, ok := c.Templates[req.Template]
 	if !ok {
 		return model.Spec{}, errors.New("unknown environment template")
@@ -137,7 +178,13 @@ func (c Config) Resolve(req model.CreateRequest) (model.Spec, error) {
 	if timeout < 1 || timeout > t.MaxTimeoutSeconds {
 		return model.Spec{}, errors.New("timeout exceeds environment policy")
 	}
-	return model.Spec{Template: req.Template, Image: t.Image, RuntimeClass: c.RuntimeClass, Command: append([]string(nil), command...), Resources: t.Resources, TimeoutSeconds: timeout}, nil
+	s := model.Spec{Template: req.Template, Image: t.Image, RuntimeClass: profile.RuntimeClass, Command: append([]string(nil), command...), Resources: t.Resources, TimeoutSeconds: timeout}
+	if c.RuntimeProfile != nil {
+		// Copy rather than aliasing mutable administrator configuration. Preserve
+		// the legacy nil representation so existing idempotency keys still match.
+		s.RuntimeProfile = &profile
+	}
+	return s, nil
 }
 
 func validateCommand(command []string) error {

@@ -12,3 +12,6 @@ coverage.out
 *.pem
 *.key
 kubeconfig*
+/evidence/
+__pycache__/
+*.pyc

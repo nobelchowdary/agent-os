@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 
 
-def main():
+def smoke(configuration, runtime_class):
     root = Path(__file__).resolve().parents[1]
     token = secrets.token_urlsafe(32)
     env = dict(os.environ, AGENTOS_LOCAL_TOKEN=token)
@@ -21,6 +21,7 @@ def main():
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def call(path, *, body=None, authenticated=True):
         headers = {"Content-Type": "application/json"}
@@ -32,7 +33,7 @@ def main():
             headers=headers,
         )
         try:
-            with urllib.request.urlopen(req, timeout=2) as response:
+            with opener.open(req, timeout=2) as response:
                 return response.status, json.load(response)
         except urllib.error.HTTPError as error:
             return error.code, json.load(error)
@@ -43,7 +44,7 @@ def main():
                 str(root / "bin/agentos"),
                 "--preview",
                 f"--listen=127.0.0.1:{port}",
-                f"--config={root / 'config/example.json'}",
+                f"--config={root / configuration}",
                 f"--db={Path(state) / 'state/runs.db'}",
             ],
             cwd=root,
@@ -71,7 +72,12 @@ def main():
             assert job["kind"] == "Job" and job["apiVersion"] == "batch/v1"
             assert job["spec"]["suspend"] is True
             pod = job["spec"]["template"]["spec"]
-            assert pod["runtimeClassName"] == "gvisor"
+            assert pod["runtimeClassName"] == runtime_class
+            assert call("/v1/plan", body={"template": "python", "runtime_class": "runc"})[0] == 400
+            if runtime_class == "isolated-sandbox":
+                assert job["spec"]["template"]["metadata"]["annotations"]["sandbox.amazonaws.com/network-isolated"] == "true"
+                assert pod["nodeSelector"]["eks.amazonaws.com/nitro-sandbox"] == "true"
+                assert all(volume["emptyDir"]["medium"] == "Memory" for volume in pod["volumes"])
             assert pod["automountServiceAccountToken"] is False
             assert pod["containers"][0]["securityContext"]["readOnlyRootFilesystem"] is True
             assert call("/v1/runs", body={"template": "python"})[0] == 503
@@ -85,7 +91,13 @@ def main():
                 process.kill()
                 process.wait()
         assert process.returncode == 0, "preview server did not shut down cleanly"
-    print("Compiled preview HTTP smoke passed; no agent code was executed.")
+
+def main():
+    for configuration, runtime_class in (("config/example.json", "gvisor"),
+                                         ("config/gvisor.example.json", "gvisor"),
+                                         ("config/nitro-isolated.example.json", "isolated-sandbox")):
+        smoke(configuration, runtime_class)
+    print("Compiled preview HTTP smoke passed for legacy, gVisor and Nitro profiles; no agent code was executed.")
 
 
 if __name__ == "__main__":
