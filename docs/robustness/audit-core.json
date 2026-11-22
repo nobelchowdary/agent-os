@@ -1,0 +1,539 @@
+{
+  "audited_commit": "e2ed1a4",
+  "scope": "C1-C15,T1-T8,T14-T16",
+  "status_scope": "Whole attachment requirement at baseline; test_refs demonstrate local subsets only.",
+  "records": [
+    {
+      "id": "C1",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestTransitionCASNoopAndTerminalImmutability"
+        },
+        {
+          "path": "internal/controller/controller_test.go",
+          "name": "TestLostActivationAndDeletedJobCannotRecreateWork"
+        }
+      ],
+      "notes": "Baseline e2ed1a4 has durable CAS, immutable terminal records and persisted activation intent, but accepts arbitrary transitions between nonterminal states. No centralized allowed-edge graph/property suite exists at this baseline. Public states differ from the proposed names: queued/starting/activating/running/cancelling/succeeded/failed/cancelled; rejected admissions are HTTP outcomes and timeouts use failed. Unconditional eventual termination is not proved under permanent infrastructure loss.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C2",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestObserveUsesTerminalConditionsAndBoundsReasons"
+        },
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestTransitionCASNoopAndTerminalImmutability"
+        }
+      ],
+      "notes": "Terminal events carry bounded human-readable reasons, with generic backend outcomes and UTF-8-safe storage. There is no stable terminal reason-code taxonomy or dedicated producer test for each requested code. Do not treat these partial reason tests as coverage of all requested causes.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C3",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/api/api_test.go",
+          "name": "TestTenantBoundaryAndDurableIdempotency"
+        },
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestIdempotencyScopeFingerprintAndConcurrency"
+        },
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestPersistenceAndIdempotencyAfterCompletion"
+        },
+        {
+          "path": "internal/controller/controller_test.go",
+          "name": "TestAmbiguousSubmitDoesNotCreateSecondExecution"
+        }
+      ],
+      "notes": "Tenant-scoped key/spec fingerprints, 409 on payload mismatch, concurrent duplicate admission and original-result lookup after completion/reopen are locally tested. Fake ambiguous backend submission tests do not reproduce 1,000 dropped API acknowledgements or establish exactly-once Kubernetes execution.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C4",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/store/reliability_test.go",
+          "name": "TestChangedFollowsCommittedMutations"
+        },
+        {
+          "path": "internal/store/reliability_test.go",
+          "name": "TestChangedIgnoresRolledBackAndClosedDatabaseWrites"
+        },
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestPersistenceAndIdempotencyAfterCompletion"
+        }
+      ],
+      "notes": "Synchronous bbolt admission commits before API acknowledgement; notifications follow successful commit and reopened records persist. No 1,000-process-kill admission/acknowledgement campaign or real-cluster crash acceptance test exists. In-process rollback and orderly reopen are narrower evidence.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C5",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/controller/controller_test.go",
+          "name": "TestDeadlineAndMissingExecution"
+        },
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestForeignJobsAreNeverObservedAdoptedDeletedOrRead"
+        },
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestCancelUsesForegroundAndWaitsForJobAndPods"
+        },
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestLateCreateAfterCancellationCannotExecute"
+        }
+      ],
+      "notes": "Owned missing execution transitions through cleanup without automatic replay; fake cancellation validates Job/Pod ownership and waits for API disappearance. No fleet-wide stray Job discovery/repair exists; late suspended creates may need manual cleanup. Foreign workloads are deliberately refused, not adopted/deleted. One-reconcile-interval convergence and physical termination are not proved.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C6",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestRenderConstrainsWorkloadAndDoesNotContactCluster"
+        },
+        {
+          "path": "internal/controller/controller_test.go",
+          "name": "TestDeadlineAndMissingExecution"
+        }
+      ],
+      "notes": "Rendered Jobs have activeDeadlineSeconds and no application retry, independently of the API admission clock. Tests inspect manifests/fake state; no controller-off overrun on EKS has run. There is no public timed_out state or dedicated deadline reason code; timeout reporting remains failed.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C7",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/controller/controller_test.go",
+          "name": "TestCancelRetainsQuotaUntilBackendCleanup"
+        },
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestCancelUsesForegroundAndWaitsForJobAndPods"
+        },
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestCancelDoesNotSucceedWhileJobRemains"
+        },
+        {
+          "path": "internal/api/client_integration_test.go",
+          "name": "TestPythonClientAgainstRealAPIAndController"
+        }
+      ],
+      "notes": "Cancellation is asynchronous foreground cleanup, retains quota until owned Job/Pods disappear, and cancelling a finished task is an API no-op in real HTTP with a fixture backend. No explicit measured SIGTERM/grace/SIGKILL bound exists; API deletion cannot fence a partitioned physical node. No signal-ignoring workload was run on EKS.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C8",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestRenderConstrainsWorkloadAndDoesNotContactCluster"
+        },
+        {
+          "path": "internal/controller/controller_test.go",
+          "name": "TestLostActivationAndDeletedJobCannotRecreateWork"
+        }
+      ],
+      "notes": "BackoffLimit=0 and restartPolicy=Never prevent automatic application retry; activation-intent/no-recreation tests protect against replay. Infrastructure-only podFailurePolicy retry and attempt idempotency-key exposure are absent and intentionally not implied by this implementation. Node-drain retries and external-write deduplication are unimplemented/unvalidated.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C9",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestEventReplayResumeAndTenantScope"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestLiveEventsDeliverCommitsAndReleaseOnDisconnect"
+        },
+        {
+          "path": "internal/store/reliability_test.go",
+          "name": "TestConcurrentSubscribeBeforeGetSeesCommittedHistory"
+        },
+        {
+          "path": "internal/store/reliability_test.go",
+          "name": "TestListPageCursorAndEventsSurviveReopen"
+        }
+      ],
+      "notes": "Committed lifecycle events append with durable records; SSE assigns stable 1-based sequence positions, validates resume cursors and tenant access, and subscribes before reads. Local live HTTP/fake workload and reopen tests cover ordering/resume subsets. The requested 100-disconnect under-load EKS campaign and client dedupe acceptance are not established.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C10",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/api/api_test.go",
+          "name": "TestRejectsPodSpecBypassAndMalformedBodies"
+        },
+        {
+          "path": "internal/api/api_test.go",
+          "name": "TestTenantBoundaryAndDurableIdempotency"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestStreamBoundsAndRequestCancellation"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestListPaginationAPI"
+        },
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestConcurrentQuotaAdmission"
+        },
+        {
+          "path": "internal/controller/health_test.go",
+          "name": "TestStopCancelsInflightOperationWithoutFalseFailure"
+        }
+      ],
+      "notes": "Implemented local bounds include request bytes, list pages, global/per-tenant active reservations, 32 total/4 per-tenant streams, finite stream lifetime/write deadlines and contextual backend calls; overload admission/stream responses use 429 plus Retry-After. No independent per-client limiter, full outbound-call audit, tenfold burst flat-memory result or accepted-task latency SLO is proved.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C11",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/controller/health_test.go",
+          "name": "TestCommittedAdmissionAndCancelWakeController"
+        },
+        {
+          "path": "internal/controller/health_test.go",
+          "name": "TestPeriodicReconcileObservesBackendCompletionWithoutStoreCommit"
+        },
+        {
+          "path": "internal/controller/health_test.go",
+          "name": "TestFailuresAggregateWithoutBlockingCancellationAndRecover"
+        },
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestOpenLockHasFiniteTimeout"
+        }
+      ],
+      "notes": "Reconciliation is level-triggered with committed-change wakeups, periodic fallback and observable loop health. The store intentionally permits one process/replica through a database lock. No leader election or multi-replica HA exists; hour-long leader-kill acceptance is not applicable to the current single-process design and has not run.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C12",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/api/api_test.go",
+          "name": "TestRejectsPodSpecBypassAndMalformedBodies"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestListPaginationAPI"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestEventReplayResumeAndTenantScope"
+        }
+      ],
+      "notes": "Baseline has /v1 routing and strict bounded caller-field/query/cursor validation, but no OpenAPI source-of-truth, generated contract suite, machine-stable API error code contract or API fuzz target. Existing example-based malformed-input tests do not satisfy generated/fuzz acceptance.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C13",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/api/api_test.go",
+          "name": "TestTenantBoundaryAndDurableIdempotency"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestEventReplayResumeAndTenantScope"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestStatusIsTenantScopedAndControllerAffectsReadiness"
+        },
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestTenantIsolationAndNewestFirst"
+        },
+        {
+          "path": "internal/config/config_test.go",
+          "name": "TestCredentialConfiguration"
+        }
+      ],
+      "notes": "Protected run APIs authenticate static bearer tokens resolved to tenants; Get/list/log/cancel/event/status boundaries have local negative tests. Tokens do not carry separate subject/audience/expiry claims and are administrator-managed static credentials. Health/readiness are intentionally unauthenticated operational probes. Full requested token contract and EKS authorization matrix remain unmet.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C14",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestPersistenceAndIdempotencyAfterCompletion"
+        },
+        {
+          "path": "internal/store/reliability_test.go",
+          "name": "TestListPageCursorAndEventsSurviveReopen"
+        },
+        {
+          "path": "internal/store/reliability_test.go",
+          "name": "TestChangedIgnoresRolledBackAndClosedDatabaseWrites"
+        }
+      ],
+      "notes": "Run history/events and indexes are transactional bbolt data outside etcd, and orderly reopen/rollback persistence is tested. There are no versioned migration, online backup/restore, fresh-cluster restore or corruption-recovery acceptance tests.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "C15",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestConcurrentQuotaAdmission"
+        },
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestCancellingRetainsQuotaUntilTerminal"
+        },
+        {
+          "path": "internal/api/api_test.go",
+          "name": "TestTenantBoundaryAndDurableIdempotency"
+        }
+      ],
+      "notes": "Transactional per-tenant/global active-run limits include queued and cancelling records and reject excess admission. These are count reservations, not separate concurrency/queue/CPU/memory quota dimensions or fair scheduling. Kueue is not integrated/evaluated and two-tenant 10x load/starvation behavior is unmeasured.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T1",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestPersistenceAndIdempotencyAfterCompletion"
+        },
+        {
+          "path": "internal/controller/controller_test.go",
+          "name": "TestAmbiguousSubmitDoesNotCreateSecondExecution"
+        },
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestLateCreateAfterCancellationCannotExecute"
+        },
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestAmbiguousActivationRetriesWithoutCreatingOrReactivating"
+        }
+      ],
+      "notes": "Local orderly-reopen and fake ambiguous-create/activation tests cover individual crash-sensitive contracts. No controller process is killed at random admission points for 1,000 real EKS runs; no campaign result is available.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T2",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/controller/health_test.go",
+          "name": "TestFailuresAggregateWithoutBlockingCancellationAndRecover"
+        },
+        {
+          "path": "internal/controller/controller_test.go",
+          "name": "TestDeadlineAndMissingExecution"
+        },
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestCancelUsesForegroundAndWaitsForJobAndPods"
+        }
+      ],
+      "notes": "Injected fake backend failure/recovery and missing-execution/cleanup cases exist. There is no timed 60-second Kubernetes API outage or real orphan convergence test.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T3",
+      "status": "Missing",
+      "test_refs": [],
+      "notes": "No node-drain/spot interruption test, infrastructure-only retry contract or external-write journal/deduplication exists. Automatic replay remains deliberately disabled in this alpha.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T4",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestPersistenceAndIdempotencyAfterCompletion"
+        },
+        {
+          "path": "internal/store/reliability_test.go",
+          "name": "TestListPageCursorAndEventsSurviveReopen"
+        },
+        {
+          "path": "internal/store/reliability_test.go",
+          "name": "TestChangedIgnoresRolledBackAndClosedDatabaseWrites"
+        }
+      ],
+      "notes": "Local store reopen preserves completed records/events and writes against a closed database fail. This is not a live store-restart/fault recovery test; no EKS 503-with-Retry-After plus acknowledgement-retention acceptance has run.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T5",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/store/store_test.go",
+          "name": "TestConcurrentQuotaAdmission"
+        },
+        {
+          "path": "internal/api/api_test.go",
+          "name": "TestTenantBoundaryAndDurableIdempotency"
+        }
+      ],
+      "notes": "One hundred concurrent in-process store admissions exercise quota atomicity; HTTP examples assert 429 when reservations are full. No measured 10x external burst, bounded-memory trace, queueing fairness or accepted-task latency objective is available.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T6",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestStreamBoundsAndRequestCancellation"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestClientDisconnectReleasesActiveStream"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestHTTP2IdleStreamSurvivesPerWriteTimeout"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestEventReplayResumeAndTenantScope"
+        }
+      ],
+      "notes": "Local tests cover stream caps, context/disconnect slot release, resume parsing and a healthy HTTP/2 idle stream. They do not fill slow-client transport buffers or measure bounded memory under stalled consumers; no EKS load/stall acceptance is available.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T7",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/controller/controller_test.go",
+          "name": "TestCancelRetainsQuotaUntilBackendCleanup"
+        },
+        {
+          "path": "internal/controller/health_test.go",
+          "name": "TestFailuresAggregateWithoutBlockingCancellationAndRecover"
+        },
+        {
+          "path": "internal/backend/kubernetes/kubernetes_test.go",
+          "name": "TestCancelUsesForegroundAndWaitsForJobAndPods"
+        }
+      ],
+      "notes": "Single-run fake cleanup and cancellation-priority behavior are exercised. The configured maximum is 64 active reservations, and no 1,000-running-task campaign or fixed physical cancellation bound exists.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T8",
+      "status": "Missing",
+      "test_refs": [],
+      "notes": "No workload that ignores SIGTERM has been executed in a real sandbox. Rendered/fake deletion tests cannot establish kubelet SIGKILL timing or physical stop, and no timed_out public terminal state exists.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T14",
+      "status": "Missing",
+      "test_refs": [],
+      "notes": "No versioned store migration or upgrade/rollback-under-load implementation/test exists. Orderly reopen tests are not release compatibility or zero-loss upgrade evidence.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T15",
+      "status": "Missing",
+      "test_refs": [],
+      "notes": "No 100,000-task/24-hour soak or memory/goroutine/file-descriptor leak evidence exists. Terminal history has no retention/compaction policy, so bounded store growth is not currently delivered.",
+      "eks_status": "Not run"
+    },
+    {
+      "id": "T16",
+      "status": "Partial",
+      "test_refs": [
+        {
+          "path": "internal/api/api_test.go",
+          "name": "TestTenantBoundaryAndDurableIdempotency"
+        },
+        {
+          "path": "internal/api/api_test.go",
+          "name": "TestRejectsPodSpecBypassAndMalformedBodies"
+        },
+        {
+          "path": "internal/api/events_test.go",
+          "name": "TestEventReplayResumeAndTenantScope"
+        },
+        {
+          "path": "internal/store/reliability_test.go",
+          "name": "TestListPageCursorScopeAndMalformedBounds"
+        }
+      ],
+      "notes": "Local example-based API/query/cursor validation and cross-tenant negative tests exist. There is no API fuzz target or real EKS comprehensive authorization/fuzz campaign at baseline e2ed1a4.",
+      "eks_status": "Not run"
+    }
+  ],
+  "post_change_note": {
+    "id": "C1",
+    "status": "Partial",
+    "eks_status": "Not run",
+    "notes": "Phase 0 local slice adds centralized acyclic model.CanTransition enforcement inside the persisted Store.Transition CAS transaction. Known-state no-ops, terminal immutability, cancellation reservation retention and explicitly documented forward observation/recovery edges are preserved. Public state names are unchanged. Exhaustive state-pair, randomized history/reservation invariants and a short native fuzz run passed locally; this does not prove unconditional eventual termination, physical worker stop, exactly-once effects or the attachment EKS acceptance.",
+    "test_refs": [
+      {
+        "path": "internal/model/run_test.go",
+        "name": "TestCanTransitionAllStatePairs"
+      },
+      {
+        "path": "internal/model/run_test.go",
+        "name": "TestLifecycleHasNoCyclesExceptIdempotentSelfTransitions"
+      },
+      {
+        "path": "internal/store/state_machine_test.go",
+        "name": "TestStoreEnforcesEveryStatePairAtomically"
+      },
+      {
+        "path": "internal/store/state_machine_test.go",
+        "name": "TestUnknownPersistedStateCannotAuthorizeTransition"
+      },
+      {
+        "path": "internal/store/state_machine_test.go",
+        "name": "TestRandomTransitionSequencesPreserveHistoryAndReservations"
+      },
+      {
+        "path": "internal/store/state_machine_test.go",
+        "name": "FuzzStoreTransitionInvariants"
+      }
+    ]
+  }
+}

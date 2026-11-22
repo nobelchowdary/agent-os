@@ -1,0 +1,240 @@
+[
+  {
+    "id": "R1",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/backend/backend.go", "name": ""},
+      {"path": "internal/backend/kubernetes/kubernetes_test.go", "name": "TestSubmitIsIdempotentAndRejectsConflictingSpecifications"},
+      {"path": "internal/backend/kubernetes/kubernetes_test.go", "name": "TestActivateMissingJobNeverCreatesReplacement"},
+      {"path": "internal/backend/kubernetes/kubernetes_test.go", "name": "TestCancelUsesForegroundAndWaitsForJobAndPods"}
+    ],
+    "notes": "Baseline e2ed1a4. A Go Backend interface defines Ready, Submit, Activate, Observe, Cancel and Logs. The only integrated implementation is the Kubernetes Job backend; gVisor and Nitro isolated are administrator-selected profiles of that implementation. There is no capabilities API, optional snapshot/suspend/resume contract, separate stop/delete contract or reusable cross-driver conformance suite, and no overstated-capability test. The named tests exercise the Job backend with local Kubernetes fakes, not independent runtime implementations or live nodes.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "R2",
+    "status": "Missing",
+    "test_refs": [
+      {"path": "internal/backend/backend.go", "name": ""},
+      {"path": "scripts/tests/test_evaluate.py", "name": "test_all_three_cold_arms_collect_and_guard_cleanup"},
+      {"path": "scripts/tests/test_evaluate.py", "name": "test_upstream_has_bounded_pod_deadline"}
+    ],
+    "notes": "No agent-sandbox execution driver or session API is wired into Agent OS. The existing opt-in evaluation collector creates v1beta1 SandboxTemplate, SandboxWarmPool and SandboxClaim objects for an upstream comparison, with exactly zero warm replicas. Its one-shot workload starts after a cold claim; this is not a warm-session implementation or warm-start benchmark. The named fake tests cover that collector and its deadline, not the requested driver. A resident dispatch workload, safe warm reuse, idle-capacity accounting and EKS cold/warm measurements are absent.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "R3",
+    "status": "Missing",
+    "test_refs": [
+      {"path": "internal/backend/backend.go", "name": ""},
+      {"path": "scripts/tests/test_probe_substrate.py", "name": "test_observed_continuity_does_not_claim_physical_release"},
+      {"path": "scripts/tests/test_probe_substrate.py", "name": "test_snapshot_must_be_new_memory_and_durable"}
+    ],
+    "notes": "There is no integrated Substrate driver. scripts/probe_substrate.py and the dedicated actor fixture provide an opt-in compatibility smoke against an operator-installed, pre-created actor. Local tests verify interpretation of snapshot/continuity evidence and refuse to equate assignment release with physical memory reclamation. They do not prove a real checkpoint on EKS. Restore after worker replacement, onto another node or instance type, and compatibility across CPU/runtime versions have not run. Preserve the plan's EKS-proof prerequisite before adding this driver.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "R4",
+    "status": "Missing",
+    "test_refs": [
+      {"path": "internal/backend/kubernetes/kubernetes.go", "name": ""},
+      {"path": "internal/controller/controller_test.go", "name": "TestLostActivationAndDeletedJobCannotRecreateWork"},
+      {"path": "scripts/tests/test_probe_substrate.py", "name": "test_cold_restart_with_files_surviving_is_failure"},
+      {"path": "scripts/tests/test_probe_substrate.py", "name": "test_filesystem_snapshot_alone_is_not_memory_checkpoint"}
+    ],
+    "notes": "The positive cross-driver recovery contract is absent. Current Jobs use ephemeral emptyDir scratch, do not preserve process memory, and fail missing activated executions rather than replaying work. Ordinary API metadata persistence is not workload recovery. The named tests establish no-replay and continuity-probe checks, not durable task files, restored connections or resolution of in-flight external calls. Correct the proposed contract to state guarantees per driver and qualified configuration: snapshots do not roll back external services or irreversible actions; connections, expired credentials and current authorization require explicit restore handling and tests, not assumed continuity.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "R5",
+    "status": "Missing",
+    "test_refs": [
+      {"path": "internal/model/run.go", "name": ""},
+      {"path": "internal/store/store.go", "name": ""},
+      {"path": "sdk/python/agentos_client.py", "name": ""}
+    ],
+    "notes": "No gateway, attempt model, external-side-effect journal, provider receipt reconciliation or stale-attempt fencing exists. Admission idempotency and the Python client's required submit key do not deduplicate provider/tool writes. Safety correction: a local journal alone cannot guarantee exactly one external write if the process dies after remote success but before recording the outcome. Such a guarantee requires a qualified provider-side idempotency/deduplication or transactional protocol, request-hash binding, and applicable fencing checked at the action boundary. Unsupported ambiguous outcomes must remain explicitly uncertain and be reconciled, rather than blindly retried. No acceptance test for external-write recovery exists.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "R6",
+    "status": "Missing",
+    "test_refs": [
+      {"path": "internal/backend/backend.go", "name": ""},
+      {"path": "internal/controller/controller_test.go", "name": "TestCancelRetainsQuotaUntilBackendCleanup"},
+      {"path": "docs/GETTING_STARTED.md", "name": ""}
+    ],
+    "notes": "No compensation registration, durable compensation state, tool invocation path or compensation audit exists. The named test proves that cancellation retains admission capacity until backend cleanup is observed; it does not undo an external action. Safety correction: cancellation and snapshot restore are not undo. A future compensation is a separately authorized operation that can fail, needs its own idempotency/reconciliation and audit, and is available only for explicitly reversible effects. Do not promise that arbitrary effects can be undone or that an undo executes exactly once without a supported external protocol.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "O1",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "scripts/tests/test_evaluate.py", "name": "test_all_three_cold_arms_collect_and_guard_cleanup"},
+      {"path": "scripts/tests/test_sample_resources.py", "name": "test_normalized_quantities_windows_and_private_report"},
+      {"path": "internal/api/events_test.go", "name": "TestStatusIsTenantScopedAndControllerAffectsReadiness"},
+      {"path": "internal/controller/health_test.go", "name": "TestFailuresAggregateWithoutBlockingCancellationAndRecover"}
+    ],
+    "notes": "Local status exposes tenant active-state counts and controller health. The opt-in collector records client-observed readiness/completion times and correctness; node sampling records CPU-window usage, memory working set and allocatable capacity. There is no operational metrics exporter, complete admission/queue/warm/cancel/event/gateway/token instrumentation, dashboard or alert-threshold configuration. Current elapsed observations are not every metric requested here, and node totals include system and unrelated work. All references are local fake/loopback checks, not observed EKS telemetry.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "O2",
+    "status": "Missing",
+    "test_refs": [
+      {"path": "go.mod", "name": ""},
+      {"path": "internal/model/run.go", "name": ""},
+      {"path": "internal/backend/kubernetes/kubernetes.go", "name": ""}
+    ],
+    "notes": "No OpenTelemetry integration, trace-context field/propagation into the sandbox, gateway/model/tool spans or complete-agent trace test exists. Lifecycle event timestamps and controller logs are not distributed traces. No model/tool gateway is implemented, so the requested end-to-end path is not present to instrument yet.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "O3",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/store/store_test.go", "name": "TestTransitionCASNoopAndTerminalImmutability"},
+      {"path": "internal/store/reliability_test.go", "name": "TestListPageCursorAndEventsSurviveReopen"},
+      {"path": "internal/api/events_test.go", "name": "TestEventReplayResumeAndTenantScope"}
+    ],
+    "notes": "Per-run lifecycle history is durably appended by admission/state transitions, remains immutable through the public terminal-state contract and can be replayed by sequence. This is not the requested comprehensive security audit trail: there is no hash chain, tamper-verification test, OCSF exporter, or policy/credential/approval/gateway-call audit path. Future hash chaining also needs a trusted checkpoint or external anchoring if deletion/truncation detection is claimed. The listed tests prove lifecycle persistence and delivery only.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "O4",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "scripts/tests/test_sample_resources.py", "name": "test_normalized_quantities_windows_and_private_report"},
+      {"path": "scripts/tests/test_decision_report.py", "name": "test_synthetic_costs_do_not_win"},
+      {"path": "scripts/tests/test_decision_report.py", "name": "test_observed_cost_route_can_continue_validation"},
+      {"path": "scripts/tests/test_decision_report.py", "name": "test_lost_work_cannot_appear_efficient"}
+    ],
+    "notes": "Evidence tooling can compare explicitly supplied complete cost totals per correct trial, requires billing references and demonstrated candidate capacity reduction for its billing-savings route, and refuses unsupported savings from bare estimates. Those tests use local supplied fixtures; their names are not evidence of actual invoices. Node sampling supplies windowed observations only, not per-task CPU seconds or attributable memory/storage/egress/warm-idle/model usage. No AWS/provider billing ingestion, reconciliation tolerance or live bill reconciliation exists. A fixed provisioned node pool does not save node dollars merely because task resource use falls.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "O5",
+    "status": "Missing",
+    "test_refs": [
+      {"path": "docs/EVALUATION_PLAN.md", "name": ""},
+      {"path": "docs/EVALUATION_RUNBOOK.md", "name": ""},
+      {"path": "internal/controller/controller.go", "name": ""}
+    ],
+    "notes": "There are proposed engineering/experiment thresholds and controller health timestamps, but no baseline-derived production SLOs, error budgets, burn-rate alerts or fault test proving those alerts. No measured warm-start or event-lag objective exists. Keep these as unvalidated targets until the relevant workload, failure assumptions and EKS baseline have been measured; a local health check is not a terminal-state guarantee under arbitrary permanent outages.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "P1",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/api/api_test.go", "name": "TestTenantBoundaryAndDurableIdempotency"},
+      {"path": "internal/api/events_test.go", "name": "TestEventReplayResumeAndTenantScope"},
+      {"path": "internal/store/store_test.go", "name": "TestTenantIsolationAndNewestFirst"},
+      {"path": "internal/config/config_test.go", "name": "TestCredentialConfiguration"},
+      {"path": "deploy/workload-limits.yaml", "name": ""}
+    ],
+    "notes": "The API authenticates distinct administrator-provisioned tenant tokens, scopes record/event access and idempotency to tenants, and enforces tenant/global active-run limits. Kubernetes workload placement still uses one configured namespace and service account, with aggregate namespace ResourceQuota/LimitRange and shared default-deny policy. There is no namespace/quota/network-policy/key provisioning per tenant or cross-tenant runtime canary suite. Local authorization tests do not establish live pod/network isolation or fairness on EKS.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "P2",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "deploy/kustomization.yaml", "name": ""},
+      {"path": "overlays/nitro/kustomization.yaml", "name": ""},
+      {"path": "docs/GETTING_STARTED.md", "name": ""},
+      {"path": "scripts/tests/test_operator_journal.py", "name": "test_counts_failed_steps_and_node_privileges"}
+    ],
+    "notes": "Kustomize deployment manifests, a Nitro overlay, image-build instructions and a manual prepared-cluster installation guide exist. Operator-effort journaling can count recorded installation steps, including failures; that is not an installer acceptance test. No Helm chart or Terraform module extending the AWS blueprint exists, and no fresh-account one-command installation or measured installation sequence has run. Current tooling intentionally does not provision cloud infrastructure or install runtime/CNI prerequisites.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "P3",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_complete_declarations_never_qualify"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_runtime_handler_no_fallback"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_all_runtime_selected_nodes_are_inspected"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_vpc_cni_requires_strict_and_explicit_enablement"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_namespace_additive_allow_blocks"}
+    ],
+    "notes": "scripts/qualify_cluster.py is an explicit-context read-only declaration inventory for the Standard EKS/gVisor profile. It inspects reported Kubernetes/runtime/node/kernel/CNI settings, CNI pod coverage, namespace Pod Security, selecting NetworkPolicies and upstream CRD availability. It always reports NOT_QUALIFIED and dynamic_tests=not_run. This is not an agentos doctor subcommand or proof of node binaries, packet denial, metadata hop limit, installed component provenance or Nitro qualification. No real-cluster misconfiguration/fix matrix or live checks have run; source references and suggested prerequisites do not substitute for those measurements.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "P4",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/api/client_integration_test.go", "name": "TestPythonClientAgainstRealAPIAndController"},
+      {"path": "internal/backend/kubernetes/kubernetes_test.go", "name": "TestLateCreateAfterCancellationCannotExecute"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_complete_declarations_never_qualify"},
+      {"path": "scripts/tests/test_probe_substrate.py", "name": "test_filesystem_snapshot_alone_is_not_memory_checkpoint"}
+    ],
+    "notes": "There are local lifecycle/store/backend contracts, real loopback API/Python-client interoperability using a nonexecuting fake backend, a declaration inventory and an opt-in dedicated Substrate continuity probe. There is no single agentos conformance command combining lifecycle faults with escape/resource/network canaries, no signed report, and no execution of such a suite unmodified against the AWS blueprint. Local JSON hashes and operator assertions are not signed attestation. None of the listed tests executes a live EKS sandbox.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "P5",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "scripts/tests/test_evaluate.py", "name": "test_all_three_cold_arms_collect_and_guard_cleanup"},
+      {"path": "scripts/tests/test_evaluate.py", "name": "test_failed_output_is_preserved_without_raw_logs"},
+      {"path": "scripts/tests/test_decision_report.py", "name": "test_registered_trial_count_cannot_be_truncated_or_changed"},
+      {"path": "scripts/tests/test_decision_report.py", "name": "test_declarations_cannot_pass"}
+    ],
+    "notes": "A registered stdlib comparison collector supports direct Jobs, the Agent OS API and upstream agent-sandbox cold claims; it pins workload inputs, retains failed trials, validates deterministic output and emits observed readiness/completion timing. A separate sampler and decision report support evidence handling. The upstream arm has zero warm replicas and does not execute the full AWS Bedrock/FQDN reference workflow; direct Jobs are a diagnostic baseline. Kueue integration, resident warm dispatch, real comparative Nitro results, comprehensive cost attribution and repeated EKS runs agreeing within a declared margin are absent. Fake collector tests are not benchmark results.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "P6",
+    "status": "Missing",
+    "test_refs": [
+      {"path": "deploy/api.yaml", "name": ""},
+      {"path": "internal/store/store_test.go", "name": "TestOpenLockHasFiniteTimeout"},
+      {"path": "internal/store/reliability_test.go", "name": "TestListPageCursorAndEventsSurviveReopen"},
+      {"path": "docs/GETTING_STARTED.md", "name": ""}
+    ],
+    "notes": "The current control plane deliberately has one bbolt owner, one API replica, a ReadWriteOnce PVC and Deployment strategy Recreate. It supports ordinary metadata reopen and documents offline backups and maintenance-window configuration restarts; no migration framework, one-version schema compatibility matrix, upgrade/rollback-under-load test or tested disaster restore exists. Versioned list cursors are not database migrations. Safety correction: zero-downtime control-plane upgrades cannot be promised by this architecture; first adopt an HA data/ownership design or revise this gate to an explicitly bounded maintenance-window restart with tested preservation. Existing Jobs continuing while the API restarts would not constitute zero-downtime API service.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "P7",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/config/config_test.go", "name": "TestEnvironmentPolicy"},
+      {"path": "internal/config/config_test.go", "name": "TestExplicitRuntimeProfilesAndLegacyCompatibility"},
+      {"path": ".github/workflows/ci.yml", "name": ""},
+      {"path": "Dockerfile", "name": ""},
+      {"path": "go.mod", "name": ""}
+    ],
+    "notes": "Workload configuration requires digest-pinned images; Go dependency/toolchain versions, GitHub Action commits and evaluation upstream references are pinned. CI runs checks and builds an image. There is no SBOM generation, release signing, vulnerability scan or unsigned-artifact rejection gate. The Docker builder uses a version tag rather than an immutable digest and deploy/api.yaml uses agent-os:dev, so not every build/deploy input is immutable. The cited configuration tests prove workload-policy checks only, not artifact signatures or a secured release pipeline.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "P8",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "SECURITY.md", "name": ""},
+      {"path": "docs/decisions/0001-initial-execution-slice.md", "name": ""},
+      {"path": "docs/decisions/0003-live-lifecycle-and-harness-client.md", "name": ""},
+      {"path": "docs/GETTING_STARTED.md", "name": ""},
+      {"path": "docs/EVALUATION_RUNBOOK.md", "name": ""}
+    ],
+    "notes": "Security scope, architecture decisions, installation/limitations and evaluation procedures are documented, including ephemeral files, asynchronous cancellation, late suspended Jobs and offline backup precautions. There is no complete threat model enumerating every trusted sandbox-output reader/loader or staged-incident runbooks/tests for stuck tasks, store failover, gateway outage and pool exhaustion. SECURITY.md's gVisor-only workload wording is stale relative to the Nitro profile and should be reconciled in the trust inventory. No new-engineer incident-resolution acceptance exercise exists. The code/architectural trust inventory must include API log handling, SDK/example output handling, evidence tools and operator-supplied subprocess/credential tooling, not only the isolation runtime.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "P9",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/api/client_integration_test.go", "name": "TestPythonClientAgainstRealAPIAndController"},
+      {"path": "scripts/tests/test_agentos_client.py", "name": "test_create_get_cancel_logs_and_wait_over_http"},
+      {"path": "scripts/tests/test_agentos_client.py", "name": "test_create_never_auto_retries_and_same_key_is_caller_owned"},
+      {"path": "scripts/tests/test_agentos_client.py", "name": "test_reconnect_only_commits_complete_validated_frames"},
+      {"path": "scripts/tests/test_agentos_client.py", "name": "test_launch_example_is_runnable_against_stub"}
+    ],
+    "notes": "The stdlib Python client supports authenticated submit/status/cancel/log retrieval and validated resumable lifecycle events. A fixed deterministic tool-launch example and real Go-API/store/controller loopback interoperability test exist; the latter uses a nonexecuting fake backend. No MCP server exposing these operations is implemented, and no off-the-shelf agent harness integration without custom code or real model-connected EKS task has been demonstrated. The example is an external tool workload, not a complete in-sandbox agent runtime.",
+    "eks_status": "Not run"
+  }
+]

@@ -1,0 +1,1142 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "Agent OS experimental execution API",
+    "version": "0.1.0",
+    "description": "Bounded agent tool execution. No live-cluster qualification or complete model-connected-agent support is implied. Transport errors before routing may be produced by net/http."
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "health",
+        "description": "Process liveness only; not node isolation.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": []
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "ready",
+        "description": "Storage, runtime declarations and configured controller health. Preview never executes work.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "description": "Exact embedded copy of this document. Authentication required.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAPI"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/templates": {
+      "get": {
+        "operationId": "templates",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Templates"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/status": {
+      "get": {
+        "operationId": "status",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/plan": {
+      "post": {
+        "operationId": "plan",
+        "description": "Render a suspended Job without creating compute.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Plan"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRun"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs": {
+      "post": {
+        "operationId": "createRun",
+        "description": "Durable admission before acknowledgment. 202 new; 200 existing matching key;409 changed input. No blind retry with a new key.",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[!-~]+$"
+            },
+            "description": "Required by the Python client; optional for legacy API callers. Persist key and exact input before POST. No key means a new admission each time."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRun"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listRuns",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 100
+            },
+            "description": ""
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 1426
+            },
+            "description": "Opaque tenant-scoped keyset cursor. No cross-request snapshot."
+          }
+        ]
+      }
+    },
+    "/v1/runs/{id}": {
+      "get": {
+        "operationId": "getRun",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{32}$"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/v1/runs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelRun",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{32}$"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/v1/runs/{id}/logs": {
+      "get": {
+        "operationId": "logs",
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Logs"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{32}$"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/v1/runs/{id}/events": {
+      "get": {
+        "operationId": "events",
+        "description": "SSE lifecycle replay then live invalidations. One-based IDs; JSON run events include sequence,run_id,at,state,optional reason. Terminal end frame has run_id,state,last_event_id and no id. 60s or256-event rotation;10s heartbeats;4streams/tenant,32total;5s per write. Reconnect after last validated event. Not live stdout, physical-stop fencing or a hard real-time SLO.",
+        "responses": {
+          "200": {
+            "description": "Lifecycle SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "204": {
+            "description": "Already caught up with terminal run; no response body."
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{32}$"
+            },
+            "description": ""
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Use after OR Last-Event-ID, never both; cannot exceed committed event count."
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$",
+              "maxLength": 20
+            },
+            "description": "Last fully consumed lifecycle sequence for this run."
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Administrator-provisioned tenant token. Never put tokens in URLs."
+      }
+    },
+    "schemas": {
+      "State": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "starting",
+          "activating",
+          "running",
+          "cancelling",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "controller_unavailable",
+              "environment_unavailable",
+              "execution_disabled",
+              "idempotency_conflict",
+              "internal_error",
+              "invalid_cursor",
+              "invalid_environment",
+              "invalid_idempotency_key",
+              "invalid_pagination",
+              "invalid_request",
+              "logs_unavailable",
+              "method_not_allowed",
+              "quota_exceeded",
+              "route_not_found",
+              "run_conflict",
+              "run_not_found",
+              "sandbox_unavailable",
+              "storage_unavailable",
+              "stream_limit_exceeded",
+              "streaming_unavailable",
+              "unauthenticated",
+              "unsupported_media_type"
+            ]
+          },
+          "error": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "code",
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "CreateRun": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "command": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "prefixItems": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8192,
+                "pattern": "^[^\\u0000]*$"
+              }
+            ],
+            "items": {
+              "type": "string",
+              "maxLength": 8192,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "description": "Optional command. Each argument <=8192 UTF-8 bytes; total <=16384 UTF-8 bytes. Omit to use administrator default.",
+            "x-max-utf8-bytes-total": 16384
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 86400,
+            "description": "Execution budget within the selected administrator maximum. Omit for its default."
+          }
+        },
+        "required": [
+          "template"
+        ],
+        "additionalProperties": false,
+        "x-max-body-bytes": 32768,
+        "x-contract-valid-example": {
+          "template": "python",
+          "command": [
+            "python",
+            "-c",
+            "print(1)"
+          ],
+          "timeout_seconds": 30
+        },
+        "x-contract-invalid-examples": [
+          {
+            "template": "python",
+            "image": "untrusted"
+          },
+          {
+            "Template": "python"
+          },
+          {
+            "template": "python",
+            "command": []
+          },
+          {
+            "template": "python",
+            "command": null
+          },
+          {
+            "template": "python",
+            "command": [
+              "python",
+              null
+            ]
+          },
+          {
+            "template": "python",
+            "timeout_seconds": 0
+          },
+          {
+            "template": "python",
+            "timeout_seconds": null
+          },
+          {
+            "template": "python",
+            "timeout_seconds": 1.5
+          },
+          {
+            "template": "python",
+            "timeout_seconds": true
+          },
+          {
+            "template": "python",
+            "runtime_class": "runc"
+          },
+          {},
+          null,
+          [],
+          {
+            "template": "python",
+            "command": [
+              ""
+            ]
+          },
+          {
+            "template": "python",
+            "timeout_seconds": 86401
+          }
+        ]
+      },
+      "Resources": {
+        "type": "object",
+        "properties": {
+          "cpu_milli": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "memory_mib": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "disk_mib": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "cpu_milli",
+          "memory_mib",
+          "disk_mib"
+        ],
+        "additionalProperties": false
+      },
+      "RuntimeProfile": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "gvisor",
+              "aws-nitro-isolated"
+            ]
+          },
+          "runtime_class": {
+            "type": "string"
+          },
+          "required_handler": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "runtime_class",
+          "required_handler"
+        ],
+        "additionalProperties": false
+      },
+      "Event": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "state": {
+            "$ref": "#/components/schemas/State"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "Spec": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          },
+          "runtime_class": {
+            "type": "string"
+          },
+          "runtime_profile": {
+            "$ref": "#/components/schemas/RuntimeProfile"
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resources": {
+            "$ref": "#/components/schemas/Resources"
+          },
+          "timeout_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "template",
+          "image",
+          "runtime_class",
+          "command",
+          "resources",
+          "timeout_seconds"
+        ],
+        "additionalProperties": false
+      },
+      "Run": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/Spec"
+          },
+          "state": {
+            "$ref": "#/components/schemas/State"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "spec",
+          "state",
+          "created_at",
+          "updated_at",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "RunPage": {
+        "type": "object",
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Run"
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runs",
+          "next_cursor"
+        ],
+        "additionalProperties": false
+      },
+      "Logs": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "logs": {
+            "type": "string",
+            "description": "Valid UTF-8, at most limit_bytes bytes, untrusted workload output."
+          },
+          "limit_bytes": {
+            "type": "integer",
+            "const": 65536
+          }
+        },
+        "required": [
+          "run_id",
+          "logs",
+          "limit_bytes"
+        ],
+        "additionalProperties": false
+      },
+      "Plan": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "preview"
+          },
+          "execution": {
+            "type": "boolean",
+            "const": false
+          },
+          "job": {
+            "type": "object",
+            "description": "Administrator-resolved, suspended Kubernetes Job. Never caller-supplied.",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "mode",
+          "execution",
+          "job"
+        ],
+        "additionalProperties": false
+      },
+      "Status": {
+        "type": "object",
+        "required": [
+          "preview",
+          "execution_enabled",
+          "runtime_profile",
+          "tenant_active",
+          "tenant_limit",
+          "active_by_state",
+          "controller_monitored",
+          "event_stream_limit_per_tenant"
+        ],
+        "properties": {
+          "preview": {
+            "type": "boolean"
+          },
+          "execution_enabled": {
+            "type": "boolean"
+          },
+          "runtime_profile": {
+            "$ref": "#/components/schemas/RuntimeProfile"
+          },
+          "tenant_active": {
+            "type": "integer"
+          },
+          "tenant_limit": {
+            "type": "integer"
+          },
+          "active_by_state": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "controller_monitored": {
+            "type": "boolean"
+          },
+          "event_stream_limit_per_tenant": {
+            "type": "integer"
+          },
+          "controller": {
+            "type": "object"
+          },
+          "controller_healthy": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Templates": {
+        "type": "object",
+        "required": [
+          "templates",
+          "preview"
+        ],
+        "properties": {
+          "templates": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object"
+            }
+          },
+          "preview": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "execution": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OpenAPI": {
+        "type": "object",
+        "required": [
+          "openapi",
+          "info",
+          "paths",
+          "components"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Structured API error. code is stable; error is human-readable and must not be parsed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds before retry for overload or transient storage/controller/backend unavailability. Retry identical creation input with the same key.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  },
+  "externalDocs": {
+    "url": "https://spec.openapis.org/oas/v3.1.1.html",
+    "description": "Pinned OpenAPI format reference"
+  },
+  "x-agentos-validation": {
+    "duplicate_json_fields": "reject",
+    "field_case": "exact",
+    "null_fields": "reject",
+    "unknown_fields": "reject",
+    "missing_content_type": "legacy allowed; explicit wrong media type returns415",
+    "multiple_auth_or_idempotency_headers": "reject"
+  }
+}

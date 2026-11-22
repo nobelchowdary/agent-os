@@ -237,13 +237,16 @@ func TestTransitionCASNoopAndTerminalImmutability(t *testing.T) {
 	if err != nil || len(unchanged.Events) != 1 || unchanged.Reason != "" || unchanged.Spec.Command[0] != "echo" {
 		t.Fatalf("no-op or immutable spec: %#v, err=%v", unchanged, err)
 	}
+	if _, err := s.Transition("run", []model.State{model.Queued}, model.Cancelling, "cancel requested"); err != nil {
+		t.Fatal(err)
+	}
 	var wins atomic.Int64
 	var wg sync.WaitGroup
-	for _, terminal := range []model.State{model.Failed, model.Cancelled, model.Succeeded} {
+	for _, terminal := range []model.State{model.Failed, model.Cancelled} {
 		wg.Add(1)
 		go func(terminal model.State) {
 			defer wg.Done()
-			_, err := s.Transition("run", []model.State{model.Queued}, terminal, strings.Repeat("界", 1000))
+			_, err := s.Transition("run", []model.State{model.Cancelling}, terminal, strings.Repeat("界", 1000))
 			if err == nil {
 				wins.Add(1)
 			} else if !errors.Is(err, ErrConflict) {
@@ -256,10 +259,10 @@ func TestTransitionCASNoopAndTerminalImmutability(t *testing.T) {
 		t.Fatalf("CAS allowed %d competing completions", wins.Load())
 	}
 	finished, err := s.Get("tenant", "run")
-	if err != nil || len(finished.Events) != 2 || len(finished.Reason) > maxReasonBytes || !utf8.ValidString(finished.Reason) {
+	if err != nil || len(finished.Events) != 3 || len(finished.Reason) > maxReasonBytes || !utf8.ValidString(finished.Reason) {
 		t.Fatalf("completion history: %#v, err=%v", finished, err)
 	}
-	for _, target := range []model.State{model.Queued, model.Starting, model.Running, model.Cancelling, model.Succeeded, model.Failed, model.Cancelled} {
+	for _, target := range []model.State{model.Queued, model.Starting, model.Activating, model.Running, model.Cancelling, model.Succeeded, model.Failed, model.Cancelled} {
 		got, err := s.Transition("run", []model.State{finished.State}, target, "change terminal")
 		if target == finished.State {
 			if err != nil || !reflect.DeepEqual(got, finished) {

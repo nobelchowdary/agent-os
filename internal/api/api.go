@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -50,6 +52,10 @@ func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	m.HandleFunc("GET /readyz", s.ready)
+	m.HandleFunc("GET /v1/openapi.json", s.auth(func(w http.ResponseWriter, r *http.Request, tenant string) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(openAPISpec)
+	}))
 	m.HandleFunc("GET /v1/templates", s.auth(func(w http.ResponseWriter, r *http.Request, tenant string) {
 		write(w, 200, map[string]any{"templates": s.Config.Templates, "preview": s.Preview})
 	}))
@@ -61,6 +67,22 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/runs/{id}/cancel", s.auth(s.cancel))
 	m.HandleFunc("GET /v1/runs/{id}/logs", s.auth(s.logs))
 	m.HandleFunc("GET /v1/runs/{id}/events", s.auth(s.events))
+	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		allowed := []string{}
+		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
+			probe := r.Clone(r.Context())
+			probe.Method = method
+			if _, pattern := m.Handler(probe); pattern != "" && pattern != "/" {
+				allowed = append(allowed, method)
+			}
+		}
+		if len(allowed) != 0 {
+			w.Header().Set("Allow", strings.Join(allowed, ", "))
+			problem(w, 405, "method_not_allowed", "method not allowed")
+			return
+		}
+		problem(w, 404, "route_not_found", "route not found")
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")
@@ -74,15 +96,15 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.Store.Active(); err != nil {
-		problem(w, 503, "storage unavailable")
+		problem(w, 503, "storage_unavailable", "storage unavailable")
 		return
 	}
 	if !s.controllerHealthy() {
-		problem(w, 503, "execution controller unavailable")
+		problem(w, 503, "controller_unavailable", "execution controller unavailable")
 		return
 	}
 	if err := s.Backend.Ready(r.Context()); err != nil {
-		problem(w, 503, "sandbox prerequisites unavailable")
+		problem(w, 503, "sandbox_unavailable", "sandbox prerequisites unavailable")
 		return
 	}
 	write(w, 200, map[string]string{"status": "ready"})
@@ -93,7 +115,7 @@ type endpoint func(http.ResponseWriter, *http.Request, string)
 func (s *Server) auth(next endpoint) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		h := r.Header.Get("Authorization")
-		if !strings.HasPrefix(h, "Bearer ") || len(h) > 1024 {
+		if len(r.Header.Values("Authorization")) != 1 || !strings.HasPrefix(h, "Bearer ") || len(h) > 1024 {
 			unauthorized(w)
 			return
 		}
@@ -114,16 +136,73 @@ func (s *Server) auth(next endpoint) http.HandlerFunc {
 }
 
 func (s *Server) readRequest(w http.ResponseWriter, r *http.Request) (model.CreateRequest, bool) {
+	if contentType := r.Header.Get("Content-Type"); contentType != "" {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || mediaType != "application/json" {
+			problem(w, 415, "unsupported_media_type", "expected application/json")
+			return model.CreateRequest{}, false
+		}
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
-	d := json.NewDecoder(r.Body)
-	d.DisallowUnknownFields()
 	var req model.CreateRequest
-	if err := d.Decode(&req); err != nil {
-		problem(w, 400, "invalid request JSON or unsupported field")
+	invalid := func() (model.CreateRequest, bool) {
+		problem(w, 400, "invalid_request", "invalid request JSON or unsupported field")
 		return req, false
 	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil || !utf8.Valid(body) {
+		return invalid()
+	}
+	d := json.NewDecoder(bytes.NewReader(body))
+	first, err := d.Token()
+	if err != nil || first != json.Delim('{') {
+		return invalid()
+	}
+	seen := make(map[string]bool)
+	for d.More() {
+		token, err := d.Token()
+		key, ok := token.(string)
+		if err != nil || !ok || seen[key] {
+			return invalid()
+		}
+		seen[key] = true
+		var raw json.RawMessage
+		if err := d.Decode(&raw); err != nil || string(raw) == "null" {
+			return invalid()
+		}
+		switch key {
+		case "template":
+			err = json.Unmarshal(raw, &req.Template)
+		case "command":
+			var arguments []json.RawMessage
+			err = json.Unmarshal(raw, &arguments)
+			if err != nil || len(arguments) == 0 || len(arguments) > 64 {
+				return invalid()
+			}
+			req.Command = make([]string, len(arguments))
+			for i, argument := range arguments {
+				if string(argument) == "null" || json.Unmarshal(argument, &req.Command[i]) != nil {
+					return invalid()
+				}
+			}
+		case "timeout_seconds":
+			err = json.Unmarshal(raw, &req.TimeoutSeconds)
+			if req.TimeoutSeconds < 1 {
+				return invalid()
+			}
+		default:
+			return invalid()
+		}
+		if err != nil {
+			return invalid()
+		}
+	}
+	last, err := d.Token()
+	if err != nil || last != json.Delim('}') || !seen["template"] {
+		return invalid()
+	}
 	if err := d.Decode(new(any)); !errors.Is(err, io.EOF) {
-		problem(w, 400, "expected one JSON object")
+		problem(w, 400, "invalid_request", "expected one JSON object")
 		return req, false
 	}
 	return req, true
@@ -132,16 +211,16 @@ func (s *Server) readRequest(w http.ResponseWriter, r *http.Request) (model.Crea
 func (s *Server) record(w http.ResponseWriter, r *http.Request, tenant string) (model.Record, bool) {
 	id := r.PathValue("id")
 	if !runID.MatchString(id) {
-		problem(w, 404, "run not found")
+		problem(w, 404, "run_not_found", "run not found")
 		return model.Record{}, false
 	}
 	v, err := s.Store.Get(tenant, id)
 	if errors.Is(err, store.ErrNotFound) {
-		problem(w, 404, "run not found")
+		problem(w, 404, "run_not_found", "run not found")
 		return v, false
 	}
 	if err != nil {
-		problem(w, 503, "storage unavailable")
+		problem(w, 503, "storage_unavailable", "storage unavailable")
 		return v, false
 	}
 	return v, true
@@ -154,12 +233,12 @@ func (s *Server) newRecord(w http.ResponseWriter, r *http.Request, tenant string
 	}
 	spec, err := s.Config.Resolve(req)
 	if err != nil {
-		problem(w, 400, err.Error())
+		problem(w, 400, "invalid_request", err.Error())
 		return model.Record{}, false
 	}
 	id, err := NewID()
 	if err != nil {
-		problem(w, 500, "could not allocate run identity")
+		problem(w, 500, "internal_error", "could not allocate run identity")
 		return model.Record{}, false
 	}
 	now := time.Now().UTC()
@@ -168,7 +247,7 @@ func (s *Server) newRecord(w http.ResponseWriter, r *http.Request, tenant string
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request, tenant string) {
 	if s.Preview {
-		problem(w, 503, "preview mode does not execute runs; use /v1/plan")
+		problem(w, 503, "execution_disabled", "preview mode does not execute runs; use /v1/plan")
 		return
 	}
 	v, ok := s.newRecord(w, r, tenant)
@@ -176,13 +255,17 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, tenant string) {
 		return
 	}
 	key := r.Header.Get("Idempotency-Key")
+	if len(r.Header.Values("Idempotency-Key")) > 1 || (len(r.Header.Values("Idempotency-Key")) == 1 && key == "") {
+		problem(w, 400, "invalid_idempotency_key", "expected one nonempty Idempotency-Key")
+		return
+	}
 	if len(key) > 128 {
-		problem(w, 400, "Idempotency-Key exceeds 128 bytes")
+		problem(w, 400, "invalid_idempotency_key", "Idempotency-Key exceeds 128 bytes")
 		return
 	}
 	for _, b := range []byte(key) {
 		if b < 33 || b > 126 {
-			problem(w, 400, "invalid Idempotency-Key")
+			problem(w, 400, "invalid_idempotency_key", "invalid Idempotency-Key")
 			return
 		}
 	}
@@ -190,13 +273,13 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request, tenant string) {
 	switch {
 	case errors.Is(err, store.ErrQuota):
 		w.Header().Set("Retry-After", "5")
-		problem(w, 429, "active run quota exceeded")
+		problem(w, 429, "quota_exceeded", "active run quota exceeded")
 		return
 	case errors.Is(err, store.ErrIdempotencyConflict):
-		problem(w, 409, "Idempotency-Key already used with a different request")
+		problem(w, 409, "idempotency_conflict", "Idempotency-Key already used with a different request")
 		return
 	case err != nil:
-		problem(w, 503, "could not persist run")
+		problem(w, 503, "storage_unavailable", "could not persist run")
 		return
 	}
 	w.Header().Set("Location", "/v1/runs/"+v.ID)
@@ -214,7 +297,7 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request, tenant string) {
 	}
 	job, err := s.Render(v)
 	if err != nil {
-		problem(w, 400, "environment cannot be rendered")
+		problem(w, 400, "invalid_environment", "environment cannot be rendered")
 		return
 	}
 	write(w, 200, map[string]any{"mode": "preview", "execution": false, "job": job})
@@ -228,25 +311,25 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request, tenant string) {
 func (s *Server) list(w http.ResponseWriter, r *http.Request, tenant string) {
 	query, err := strictQuery(r, "limit", "before")
 	if err != nil {
-		problem(w, 400, "invalid pagination parameters")
+		problem(w, 400, "invalid_pagination", "invalid pagination parameters")
 		return
 	}
 	limit := 100
 	if raw, ok := query["limit"]; ok {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 || n > 100 {
-			problem(w, 400, "limit must be between 1 and 100")
+			problem(w, 400, "invalid_pagination", "limit must be between 1 and 100")
 			return
 		}
 		limit = n
 	}
 	v, next, err := s.Store.ListPage(tenant, limit, query["before"])
 	if errors.Is(err, store.ErrCursor) {
-		problem(w, 400, "invalid pagination cursor")
+		problem(w, 400, "invalid_cursor", "invalid pagination cursor")
 		return
 	}
 	if err != nil {
-		problem(w, 503, "storage unavailable")
+		problem(w, 503, "storage_unavailable", "storage unavailable")
 		return
 	}
 	if v == nil {
@@ -256,7 +339,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, tenant string) {
 }
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request, tenant string) {
 	if s.Preview {
-		problem(w, 503, "preview mode cannot cancel executions")
+		problem(w, 503, "execution_disabled", "preview mode cannot cancel executions")
 		return
 	}
 	v, ok := s.record(w, r, tenant)
@@ -269,11 +352,11 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request, tenant string) {
 	}
 	v, err := s.Store.Transition(v.ID, []model.State{v.State}, model.Cancelling, "cancel requested")
 	if errors.Is(err, store.ErrConflict) {
-		problem(w, 409, "run changed; retry cancellation")
+		problem(w, 409, "run_conflict", "run changed; retry cancellation")
 		return
 	}
 	if err != nil {
-		problem(w, 503, "could not persist cancellation")
+		problem(w, 503, "storage_unavailable", "could not persist cancellation")
 		return
 	}
 	write(w, 202, v)
@@ -284,17 +367,17 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, tenant string) {
 		return
 	}
 	if s.Preview {
-		problem(w, 503, "execution disabled")
+		problem(w, 503, "execution_disabled", "execution disabled")
 		return
 	}
 	const limit int64 = 64 * 1024
 	logs, err := s.Backend.Logs(r.Context(), v.ID, limit)
 	if errors.Is(err, backend.ErrNotFound) {
-		problem(w, 404, "execution logs unavailable")
+		problem(w, 404, "logs_unavailable", "execution logs unavailable")
 		return
 	}
 	if err != nil {
-		problem(w, 503, "execution logs unavailable")
+		problem(w, 503, "logs_unavailable", "execution logs unavailable")
 		return
 	}
 	// JSON replaces invalid UTF-8, which can expand raw log bytes. Apply the
@@ -314,10 +397,13 @@ func write(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
-func problem(w http.ResponseWriter, status int, message string) {
-	write(w, status, map[string]string{"error": message})
+func problem(w http.ResponseWriter, status int, code, message string) {
+	if code == "storage_unavailable" || code == "controller_unavailable" || code == "sandbox_unavailable" || code == "logs_unavailable" {
+		w.Header().Set("Retry-After", "5")
+	}
+	write(w, status, map[string]string{"error": message, "code": code})
 }
 func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
-	problem(w, 401, "authentication required")
+	problem(w, 401, "unauthenticated", "authentication required")
 }

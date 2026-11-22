@@ -1,0 +1,197 @@
+[
+  {
+    "id": "S1",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/config/config_test.go", "name": "TestRuntimeProfileRejectsMissingConflictingOrWeakenedSelection"},
+      {"path": "internal/backend/kubernetes/profiles_test.go", "name": "TestExplicitProfilesRejectUnsupportedOrWeakenedCombinations"},
+      {"path": "internal/api/api_test.go", "name": "TestRejectsPodSpecBypassAndMalformedBodies"}
+    ],
+    "notes": "Audited baseline e2ed1a4. Administrator configuration selects one gVisor/runsc or AWS Nitro isolated profile for this API/backend, persists it with the run, and refuses ordinary runtime combinations. Callers cannot override the image or runtime through submission. Profiles are not selected independently per template; Kata and a runc dev exception are absent. Tests cover configuration, rendered objects and fake-client behavior; they do not prove runtime isolation, an EKS admission policy_denied result or the Phase 1 acceptance test.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "S2",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/backend/kubernetes/kubernetes_test.go", "name": "TestRenderConstrainsWorkloadAndDoesNotContactCluster"},
+      {"path": "internal/backend/kubernetes/profiles_test.go", "name": "TestNitroRenderBindsProfileAndBoundsMemoryScratch"},
+      {"path": "internal/api/api_test.go", "name": "TestRejectsPodSpecBypassAndMalformedBodies"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_complete_declarations_never_qualify"}
+    ],
+    "notes": "The renderer fixes non-root UID/GID, dropped capabilities, no privilege escalation, RuntimeDefault seccomp, read-only root, bounded emptyDir scratch, equal requests/limits, no host namespaces/hostPath and no mounted service-account token. Manifests declare restricted Pod Security. Nitro scratch is memory-backed; gVisor disk enforcement depends on kubelet accounting/eviction. Per-Pod PID limits need independently verified node configuration, not a caller PodSpec field. The API rejects arbitrary PodSpec fields rather than accepting unsafe specifications for later admission. No real admission mutation, exhaustion, PID containment or EKS enforcement test has run; full acceptance is unmet.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "S3",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_cli_selector_cannot_conceal_unconstrained_runtime"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_node_profile_and_taints"},
+      {"path": "internal/backend/kubernetes/profiles_test.go", "name": "TestNitroRenderBindsProfileAndBoundsMemoryScratch"}
+    ],
+    "notes": "The example gVisor RuntimeClass selects administrator-labeled nodes, and the read-only preflight checks RuntimeClass selection and taint/toleration eligibility. It does not provision a dedicated tainted pool or verify EC2 metadata hop limits. The Nitro renderer additionally requests network-device removal, with an explicit trusted-parent/vsock caveat. No task has attempted metadata access on EKS, and NetworkPolicy declarations alone cannot prove node-local or metadata isolation. Full acceptance is unmet.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "S4",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/config/config_test.go", "name": "TestEnvironmentPolicy"},
+      {"path": "scripts/tests/test_evaluate.py", "name": "test_digest_pin_and_runtime_cannot_fallback"}
+    ],
+    "notes": "Administrator templates require SHA256 image digests and submission cannot replace their images. The registry prefix is syntactically validated, not checked against an administrator registry allowlist. There is no signature-verifying admission integration or unsigned-image rejection test. IfNotPresent is a pull policy, not proof that images are pre-cached, scanned or signature-verified. Controlled cached/uncached EKS measurements are absent; full acceptance is unmet.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "S5",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No nightly real-cluster escape/resource-exhaustion canary suite implements the listed Kubernetes API, peer tenant, internet, host-filesystem, fork, memory and disk scenarios. Rendering tests and the read-only qualification helper are not escape tests. examples/conformance/README.md describes positive/negative network controls, but there is no execution report proving containment, reason classification or node readiness on EKS.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "N1",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/backend/kubernetes/kubernetes_test.go", "name": "TestReadyRequiresRuntimeAndDefaultDenyInstallation"},
+      {"path": "internal/backend/kubernetes/kubernetes_test.go", "name": "TestActivateRechecksDefaultDenyBeforePatch"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_namespace_additive_allow_blocks"}
+    ],
+    "notes": "deploy/workload-policy.yaml denies all ingress and egress for the workload label. Backend readiness/activation check the named policy shape, and the offline preflight detects selecting namespace allow policies. This is one shared offline-workload policy, not generated per-template DNS/gateway policy; no gateway exists. A matching object does not prove CNI enforcement or absence of node-local/cluster-specific exceptions. The negative-connectivity EKS acceptance test is unmet, and timeout alone would not distinguish policy denial from an unreachable test endpoint.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "N2",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_vpc_cni_requires_strict_and_explicit_enablement"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_unready_or_wrong_owner_cni_pod_is_not_coverage"},
+      {"path": "scripts/tests/test_qualify_cluster.py", "name": "test_complete_declarations_never_qualify"}
+    ],
+    "notes": "The read-only helper requires explicit VPC CNI strict-startup and policy-enablement declarations and Ready CNI-owned Pods on eligible nodes, or recognizes a Cilium policy declaration. Its conservative VPC CNI version gate is a chosen evaluation profile, not a universal AWS requirement. It returns NOT_QUALIFIED even when declarations match. No socket probe in the first 500 ms or live policy-convergence/routing test exists; full acceptance is unmet.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "N3",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "There is no package pull-through mirror, upstream allowlist, mirror patch/scan pipeline or corresponding isolation test. Current offline tasks use dependencies already present in administrator-pinned images. Adding a mirror is a separate egress trust-boundary change, not a prerequisite for demonstrating an offline Phase 1 task.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "N4",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No model/tool gateway is deployed or integrated. The Python harness example keeps the model loop outside Agent OS and submits a fixed deterministic tool workload; it does not demonstrate a model-connected agent or a gateway-only route. Keep gateway evaluation behind the Phase 1 live-qualification exit rather than treating any candidate choice as implemented.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "N5",
+    "status": "Partial",
+    "test_refs": [
+      {"path": "internal/backend/kubernetes/kubernetes_test.go", "name": "TestRenderConstrainsWorkloadAndDoesNotContactCluster"},
+      {"path": "internal/api/api_test.go", "name": "TestRejectsPodSpecBypassAndMalformedBodies"}
+    ],
+    "notes": "The rendered workload has no injected environment credentials or mounted Kubernetes service-account token, and callers cannot add arbitrary credential/PodSpec fields. Existing bearer tokens authenticate external API tenants; they are not short-lived task/tenant/audience-bound workload tokens. No task-token issuer, exchange service or provider credential broker exists. Structural local tests do not scan a running Pod's image/filesystem/logs and do not meet the provider-key absence acceptance test.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "N6",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No model-call usage ingestion or task-bound input/output token ledger exists. Node sampling records aggregate node observations and explicitly makes no token/billing inference. No provider usage reconciliation, rounding tolerance or model-call acceptance test has run.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "N7",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No task-token/tenant revocation protocol or timed gateway test exists. Tenant API credentials are loaded from environment-backed configuration at process start; changing a Secret does not hot-reload principals. A universal five-second revocation guarantee is unsafe without an explicit authoritative decision/lease model and fail-closed behavior on partitions. Scope any future bound to new authorization decisions, connectivity/cache assumptions and in-flight-call handling; revocation cannot undo already committed external effects.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "N8",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "There is no gateway lifecycle or gateway-outage fault test. Existing default-deny/NIC-removal declarations are useful offline safeguards but do not prove a future gateway integration fails closed. The criterion 'no packet leaves the sandbox pool' must distinguish forbidden direct provider/tool traffic from permitted DNS/gateway traffic and include established connections, bypass routes and authoritative positive controls.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "N9",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No per-template MCP/tool/host authorization or per-call tool audit exists. Administrator-owned execution templates constrain images/resources; they are not a tool allowlist, and permitted caller code is not inspected as an authorization decision. No denied-unlisted-tool acceptance test exists.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "B1",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "There is no organization/team/user/agent/task budget hierarchy, rolling/calendar usage window, token/spend/compute ledger or hard-stop/alert budget policy. Transactional active-run admission counts and fixed resource/deadline limits are distinct controls. Future hard-stop semantics must state what can be refused before execution versus costs already incurred while a request or worker is in flight.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "B2",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No model/tool budget reservation-and-settlement transaction exists. Active-run quota reservations do not reserve token or monetary spend. 'No overshoot' is meaningful for a bounded reserved unit only when every concurrent caller uses the same durable atomic authority. Monetary guarantees additionally need a pinned price version, conservative request/output bounds, failure/streaming settlement rules and explicit treatment of provider adjustments; an estimate is not proof that an eventual invoice cannot exceed it.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "B3",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "The durable bbolt run store preserves admission/lifecycle records, not a cross-provider budget ledger. There are no provider identities, shared budget windows, settlement records or gateway-restart/two-provider budget tests. Missing capability in this repository does not establish that no existing product covers it; competitive assertions need separate current evidence.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "B4",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No Cedar integration, signed/versioned policy bundle loader or admission-and-gateway decision log exists. Current Go configuration validation and named default-deny NetworkPolicy checks do not implement this requirement. No tamper-rejection or recorded policy-version acceptance test exists.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "B5",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "There is no approval state, named approver authorization, expiry or approve/resume API. A staged suspended Job and the durable activating phase protect ambiguous Kubernetes creation; they are not a human-approval workflow. No approval/expiry acceptance test exists.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "T9",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No executable fork/memory/disk exhaustion fault scenario has run against a real node. S2's local rendered-limit checks do not show actual PID limits, cgroup containment, eviction timing, reason codes or a node remaining Ready. Implement bounded, operator-controlled stress fixtures and profile-specific acceptance before interpreting resource declarations as containment evidence.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "T10",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No live first-500-ms egress, DNS-tunnelling, metadata or API-server negative test exists. The qualification helper intentionally performs read-only inventory, while its tests simulate declared configuration. Future probes need controlled reachable positive endpoints, same/cross-node and applicable IPv4/IPv6 paths, additive-policy review and checks of established as well as new traffic; an unreachable endpoint or DNS failure alone is not a pass.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "T11",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No automated secret scan of a running workload's PodSpec, environment, image/filesystem and logs exists. The renderer's no-env/no-token-mount assertions are structural safeguards only. A meaningful later test must use a synthetic marker supplied only to the trusted credential broker and verify both successful brokered access and marker absence, without dumping real credentials into test output.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "T12",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No gateway is present to kill and no running-agent gateway-outage test exists. An offline workload already denied all network traffic is not evidence that a model-connected execution path has no fallback. Define the traffic scope and outcome of existing connections and in-flight calls before claiming the required fail-closed behavior.",
+    "eks_status": "Not run"
+  },
+  {
+    "id": "T13",
+    "status": "Missing",
+    "test_refs": [],
+    "notes": "No 100-concurrent-provider-call budget-limit test or reservation ledger exists. Existing concurrency quota tests exercise run admission, not token/spend settlement. Future tests must separately verify exact reserved-call counts, bounded reserved usage, restart/failure settlement and stated monetary estimation tolerances.",
+    "eks_status": "Not run"
+  }
+]

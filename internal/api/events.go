@@ -107,7 +107,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, tenant string) {
 	}
 	cursor, err := eventCursor(r, len(record.Events))
 	if err != nil {
-		problem(w, 400, "invalid event cursor")
+		problem(w, 400, "invalid_cursor", "invalid event cursor")
 		return
 	}
 	if record.State.Terminal() && cursor == len(record.Events) {
@@ -115,12 +115,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, tenant string) {
 		return
 	}
 	if _, ok := w.(http.Flusher); !ok {
-		problem(w, 503, "event streaming unavailable")
+		problem(w, 503, "streaming_unavailable", "event streaming unavailable")
 		return
 	}
 	if !s.reserveStream(tenant) {
 		w.Header().Set("Retry-After", "1")
-		problem(w, 429, "event stream limit exceeded")
+		problem(w, 429, "stream_limit_exceeded", "event stream limit exceeded")
 		return
 	}
 	defer s.releaseStream(tenant)
@@ -219,7 +219,7 @@ func healthyController(status controller.Status) bool {
 func (s *Server) status(w http.ResponseWriter, r *http.Request, tenant string) {
 	active, err := s.Store.Active()
 	if err != nil {
-		problem(w, 503, "storage unavailable")
+		problem(w, 503, "storage_unavailable", "storage unavailable")
 		return
 	}
 	states := make(map[model.State]int)
@@ -232,7 +232,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request, tenant string) {
 	}
 	profile, err := s.Config.ResolvedRuntimeProfile()
 	if err != nil {
-		problem(w, 503, "environment unavailable")
+		problem(w, 503, "environment_unavailable", "environment unavailable")
 		return
 	}
 	result := map[string]any{"preview": s.Preview, "execution_enabled": !s.Preview,

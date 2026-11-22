@@ -17,6 +17,49 @@ const (
 
 func (s State) Terminal() bool { return s == Succeeded || s == Failed || s == Cancelled }
 
+func (s State) Valid() bool {
+	switch s {
+	case Queued, Starting, Activating, Running, Cancelling, Succeeded, Failed, Cancelled:
+		return true
+	}
+	return false
+}
+
+// CanTransition is the persisted lifecycle graph. Known-state self transitions
+// are idempotent reads: they must not append an event or change the reason.
+//
+// Normal dispatch is queued -> starting -> activating -> running. Cancellation
+// may enter cancelling from queued, starting, activating or running.
+// Running work may succeed/fail; confirmed cleanup ends cancelling as cancelled
+// or failed. Cancelling cannot return to execution, and terminal states cannot
+// change to another state.
+//
+// Forward observation/recovery edges from queued, starting and activating to
+// running/succeeded/failed deliberately preserve authoritative observations of
+// an already-owned execution after downtime. These edges never submit or replay
+// work. Activation intent must still be persisted before backend activation.
+func CanTransition(from, to State) bool {
+	if !from.Valid() || !to.Valid() {
+		return false
+	}
+	if from == to {
+		return true
+	}
+	switch from {
+	case Queued:
+		return to == Starting || to == Cancelling || to == Running || to == Succeeded || to == Failed
+	case Starting:
+		return to == Activating || to == Cancelling || to == Running || to == Succeeded || to == Failed
+	case Activating:
+		return to == Running || to == Cancelling || to == Succeeded || to == Failed
+	case Running:
+		return to == Cancelling || to == Succeeded || to == Failed
+	case Cancelling:
+		return to == Cancelled || to == Failed
+	}
+	return false
+}
+
 type Resources struct {
 	CPUMilli  int64 `json:"cpu_milli"`
 	MemoryMiB int64 `json:"memory_mib"`

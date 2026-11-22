@@ -354,10 +354,12 @@ func (s *Store) Active() ([]model.Record, error) {
 	return result, err
 }
 
-// Transition performs a compare-and-set on the current state. Terminal states
-// are immutable. An allowed same-state transition returns without another event.
+// Transition performs a compare-and-set against the persisted state and enforces
+// model.CanTransition in the same transaction. The caller's expected-state list
+// cannot authorize an illegal edge. An allowed same-state transition returns
+// without changing history or notifying subscribers.
 func (s *Store) Transition(id string, allowed []model.State, to model.State, reason string) (model.Record, error) {
-	if !validState(to) {
+	if !to.Valid() {
 		return model.Record{}, fmt.Errorf("%w: unknown target state", ErrConflict)
 	}
 	var result model.Record
@@ -380,12 +382,12 @@ func (s *Store) Transition(id string, allowed []model.State, to model.State, rea
 		if !matched {
 			return fmt.Errorf("%w: current state %s", ErrConflict, record.State)
 		}
+		if !model.CanTransition(record.State, to) {
+			return fmt.Errorf("%w: transition %s to %s is not allowed", ErrConflict, record.State, to)
+		}
 		if record.State == to {
 			result = record
 			return nil
-		}
-		if record.State.Terminal() {
-			return fmt.Errorf("%w: terminal state %s", ErrConflict, record.State)
 		}
 		now := time.Now().UTC()
 		if now.Before(record.UpdatedAt) {
@@ -492,15 +494,6 @@ func orderKey(record model.Record) []byte {
 	binary.BigEndian.PutUint32(key[8:12], uint32(record.CreatedAt.Nanosecond()))
 	copy(key[12:], record.ID)
 	return key
-}
-
-func validState(state model.State) bool {
-	switch state {
-	case model.Queued, model.Starting, model.Activating, model.Running, model.Cancelling, model.Succeeded, model.Failed, model.Cancelled:
-		return true
-	default:
-		return false
-	}
 }
 
 func boundedReason(reason string) string {

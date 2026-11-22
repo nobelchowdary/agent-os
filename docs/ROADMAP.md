@@ -10,6 +10,8 @@ Implemented for that milestone: administrator-owned gVisor/offline Nitro profile
 
 The November 21 iteration adds resumable committed lifecycle events, immediate controller wakeups for admission/cancellation, controller health, tenant-scoped history pagination and a Python harness client. [Live API](LIVE_API.md), [decision 0003](decisions/0003-live-lifecycle-and-harness-client.md). Its acceptance tests cover lost-wakeup/replay, tenant/cursor separation, stream bounds/disconnection, health recovery and pending cleanup. Actual agent execution on EKS and controlled provider access remain the next integration gates; this iteration does not establish runtime performance or a full in-sandbox AI agent.
 
+The supplied [robustness proposal and 70-ID audit](robustness/README.md) now govern the next work through explicit phase gates. At baseline `e2ed1a4`, 41 requirements are Partial and 29 Missing against the whole requested acceptance criteria; all EKS tests are Not run. Local phase 0 improvements enforce the persisted state graph (C1) and add an embedded OpenAPI/error/validation contract (C12). [Decision 0004](decisions/0004-robustness-phase-zero.md). Phase 0 remains in progress; later gateway and driver implementation is gated by its unmet prerequisites and EKS qualification.
+
 | Stage | Capability | Evidence required before expanding |
 | --- | --- | --- |
 | First alpha | Authenticated tenant API; administrator-owned Python/Node templates; bounded Jobs requiring gVisor; default-deny workload policy prerequisite; admission limits; idempotent submission; persisted run metadata; status/cancel/log access; local Job preview | Automated contract tests, source checks, reproducible build instructions; no claim of live-cluster qualification |

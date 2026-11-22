@@ -50,6 +50,8 @@ Workload networking is denied by default; the Nitro profile also requests a NIC-
 
 - [Getting started](docs/GETTING_STARTED.md): preview, cluster prerequisites, API examples and operational limits.
 - [Launch and live API](docs/LIVE_API.md): agent-harness integration, event replay, health and pagination; [Python client](sdk/python/README.md).
+- [API contract](docs/API_CONTRACT.md): embedded OpenAPI, stable error codes and request compatibility.
+- [Robustness work](docs/robustness/README.md): the supplied plan, audit of all 70 requirements and phase 0 gates.
 - [Architecture decision](docs/decisions/0001-initial-execution-slice.md): the first backend and its scope.
 - [Roadmap](docs/ROADMAP.md): capability gates driven by workload evidence and customer needs.
 - [Alpha capability map](docs/ALPHA_CAPABILITY_MAP.md), [EKS evaluation brief](docs/EKS_EVALUATION_BRIEF.md), and [product-direction review](docs/PRODUCT_DIRECTION_REVIEW.md): current evidence and experiments before choosing a broader product.

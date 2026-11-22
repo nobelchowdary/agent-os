@@ -1,0 +1,403 @@
+Agent OS robustness plan
+Nov 21, 2026 · @Ranob
+Read this first
+Agent OS becomes robust in three moves: make the task lifecycle provably correct, adopt upstream projects for the commodity parts, and build only what nobody else owns.
+This plan is written from your status notes through commit e2ed1a4 and the research in this project. The repository could not be opened from this session, so every requirement carries an ID and an acceptance test instead of a code reference.
+What robust means here
+• Every accepted task reaches exactly one terminal state, whatever crashes, restarts or retries happen.
+• Nothing inside a sandbox can reach credentials, the cluster or the internet except through one audited gateway.
+• Every claim is backed by a test that runs against a real EKS cluster, not only local integration tests.
+What it does not mean
+Matching every feature of every product is the wrong target for a small team. Isolation runtimes, warm pools, checkpoint and restore, egress enforcement and a policy language already exist as open, foundation backed projects. Agent OS should integrate them behind interfaces and win on correctness, operating effort on EKS, and cost per correctly completed task.
+How your coding agent should use this
+1.  Run a gap audit first. Mark every requirement ID as Implemented, Partial or Missing, with the test that proves it.
+2.  Work the phases in order. Do not start a phase until the previous exit test passes on EKS.
+3.  Keep each driver and integration behind an interface with its own conformance tests, so upstream versions can change without touching the core.
+4.  Send back the report in the format in the last section.
+Target architecture
+Tasks enter through the API, run in a sandbox that holds no credentials, and reach models and tools only through the gateway. The API and the gateway both write to one durable store, which is where budgets, audit and cost per task come from.
+• Agent OS API: authentication, idempotent submit, admission (quota, policy, budgets) and lifecycle events.
+• Execution drivers: one interface with three backends: a Kubernetes Job with a RuntimeClass, agent-sandbox for warm sessions, and Substrate for checkpoints.
+• Sandbox pod: one task, a default deny network, a short lived task token and nothing else.
+• Gateway: exchanges the task token for real credentials, meters tokens, enforces budgets and policy, and journals side effects.
+• Durable store and telemetry: admission log, events, audit trail, usage and cost.
+Phases and gates
+Seven phases run in order, and each closes with a test on EKS. Phase 3 is the decision gate: it determines how much of phases 4 and 5 is worth building.
+Phase
+Scope
+Requirement IDs
+Exit test
+0. Gap audit and core invariants
+Audit every ID; close gaps in the control plane
+C1 to C15
+Audit table complete; invariant suite green under fault injection
+1. EKS qualification, first real sandbox task
+Reference cluster, isolation profiles, closed network
+S1 to S5, N1 to N3, P3
+agentos doctor passes; escape canaries pass on gvisor and isolated-sandbox; one real task runs under default deny
+2. One complete agent with controlled access
+Gateway, task tokens, usage binding
+N4 to N9, O2
+A model connected agent finishes a multi step task with no provider credential in the pod and every call metered against the task
+3. Upstream comparison (decision gate)
+Benchmark and conformance harness, cost per task
+P4, P5, O4
+Report against the AWS blueprint, Jobs plus Kueue, and Nitro Sandboxes; decision rule applied
+4. Sessions, warm start, recovery
+Driver interface, agent-sandbox and Substrate drivers, recovery contract
+R1 to R6
+Warm start and restore measured on EKS; recovery contract tests pass
+5. Budgets, policy, approvals
+Durable budgets, Cedar policy, approval flow
+B1 to B5
+Budget race and policy tests pass across two providers
+6. Tenancy, availability, packaging
+Multi tenant hardening, upgrades, supply chain, documents
+O1, O3, O5, P1, P2, P6 to P9, T1 to T16
+One command install on a fresh cluster; upgrade and rollback pass; full test matrix green
+Decision rule for phase 3. Fill in the two thresholds before the run, not after.
+• Continue as a product if Agent OS beats the AWS blueprint on at least one measure: cost per correctly completed task by X percent, operator steps to a first sandboxed agent by Y percent, or duplicate external writes after recovery (zero against a baseline that shows some).
+• Reposition as an operations layer over upstream if cost and recovery are at parity but operating effort is clearly lower.
+• Stop adding runtime features if upstream wins all three. Contribute the findings upstream and revisit the product.
+A starting point for the thresholds is X = 20 and Y = 50. Change them, but write them down first.
+Core control plane requirements
+The control plane is the part you own outright, so it must stay correct under crashes, retries and overload before any feature is added.
+ID
+Requirement
+Acceptance test
+C1
+Explicit task state machine: SUBMITTED, ADMITTED, STARTING, RUNNING, then exactly one of SUCCEEDED, FAILED, CANCELLED or TIMED_OUT, plus REJECTED at admission. Illegal transitions are unrepresentable in code.
+A property test drives random event orders. No illegal transition occurs and every task ends in one terminal state.
+C2
+A reason code on every terminal state: task_error, deadline_exceeded, cancelled, oom_killed, evicted, image_pull_failed, policy_denied, budget_exceeded, infra_failure.
+One dedicated test produces each code.
+C3
+Idempotent submit with a client supplied key. The same key and payload returns the same task. The same key with a different payload returns 409.
+Replay 1,000 submits with duplicates and dropped responses. Task count equals unique keys.
+C4
+Write ahead admission: the decision is durable before the API acknowledges it.
+Kill the controller between decision and acknowledgement 1,000 times. No acknowledged task is lost and none is admitted twice.
+C5
+No orphans in either direction. Every Job or pod maps to a task and every running task maps to a workload. A reconciler repairs both.
+Delete Jobs behind the controller and create stray Jobs. Both converge within one reconcile interval.
+C6
+Deadlines are enforced by Kubernetes (activeDeadlineSeconds on the Job), not only by controller timers.
+Stop the controller and let a task overrun. It still ends TIMED_OUT.
+C7
+Bounded cancellation: SIGTERM, grace period, SIGKILL. Cancelling a finished task is a no op.
+A task that ignores SIGTERM is terminal within the grace period plus a fixed margin.
+C8
+Only infrastructure failures retry automatically (Job podFailurePolicy: ignore disruptions, fail on a nonzero exit). Each attempt exposes the task idempotency key to the workload.
+A node drain mid task retries. A nonzero exit does not.
+C9
+Event log: append only, monotonic sequence per task, resumable from any sequence number, at least once delivery with dedupe by task and sequence.
+Disconnect and resume a stream 100 times under load. No gap and no duplicate after dedupe.
+C10
+Everything is bounded: payload size, page size, streams per client, queue depth per tenant, a timeout on every outbound call. Overload returns 429 with Retry-After.
+A 10x burst leaves memory flat and loses no accepted task.
+C11
+Crash safe and highly available: level triggered reconcile, leader election, two or more replicas.
+Kill the leader every 30 seconds for an hour under load. All invariants hold.
+C12
+API contract: OpenAPI as the source of truth, /v1 versioning, stable error codes, validation on every field.
+Contract tests are generated from the spec. Fuzzing finds no crash.
+C13
+Authentication and authorization on every call, with tenant and subject in the token and tenant isolation in every query.
+Authorization matrix: tenant A can never read, cancel or stream a task of tenant B.
+C14
+Store: transactional, versioned migrations, tested backup and restore. Task history and events do not live in etcd.
+Restore from backup into a fresh cluster. History is intact.
+C15
+Admission quotas per tenant: concurrency, queue length, CPU and memory. Evaluate Kueue as the engine before extending custom admission code.
+Two tenants at 10x their quota. Neither starves the other.
+Commit e2ed1a4 reportedly covers part of C7, C9, C10 and C11 (cancellation handling, resumable events, bounded streams, health checks). The audit should confirm each against its test rather than assume it.
+Sandbox, network and gateway requirements
+A sandbox is safe only when the pod is locked down, the network is closed by default, and credentials never enter it.
+ID
+Requirement
+Acceptance test
+S1
+Isolation profile per template: runtimeClassName is gvisor, isolated-sandbox (AWS Nitro Sandboxes) or a Kata class. Plain runc is refused outside dev mode.
+A runc submit in production mode is REJECTED with policy_denied.
+S2
+Pod baseline: non root, all capabilities dropped, no privilege escalation, seccomp RuntimeDefault, read only root filesystem with a size limited scratch volume, no host namespaces or hostPath, no service account token, requests equal to limits, ephemeral storage and PID limits. The namespace enforces the restricted Pod Security level.
+A spec that violates any single item is rejected at admission.
+S3
+Dedicated sandbox node pool with taints. Instance metadata is unreachable from pods (hop limit 1 plus a network rule).
+From inside a task, a request to 169.254.169.254 fails.
+S4
+Images come from an allowlisted registry, pinned by digest, with signatures verified at admission, and are cached on nodes.
+An unsigned or unpinned image is rejected. Cold start is measured with and without the cache.
+S5
+Escape canary suite, run nightly on a real cluster: reach the Kubernetes API, another tenant's pod, the internet and the node filesystem; run a fork bomb, a memory hog and a disk fill.
+Every attempt fails as expected, the task ends with the right reason code, and the node stays Ready.
+N1
+Default deny NetworkPolicy generated per template: DNS and the gateway only.
+A connection to any other address times out.
+N2
+No startup window. On the VPC CNI use strict mode, which starts pods closed and needs a policy for every endpoint including CoreDNS. The alternative is Cilium, as the AWS blueprint uses.
+A task that opens a socket in its first 500 ms is blocked.
+N3
+Package installs go through a pull through mirror that is pinned, patched and treated as part of the boundary.
+The mirror cannot reach arbitrary upstreams. Its image is scanned and versioned.
+N4
+A gateway outside the sandbox namespace proxies model APIs and tools. Adopt an existing gateway. Do not write a proxy.
+One complete agent runs with the gateway as its only route out.
+N5
+Task token: short lived and bound to task, tenant and audience. The gateway exchanges it for the real provider credential. Provider keys never appear in the pod spec, environment, files or logs.
+Scanning the pod spec, environment, filesystem and logs for the provider key returns zero hits.
+N6
+Usage binding: every model call records model, input tokens and output tokens against the task.
+Gateway totals for a test window match the provider's usage report within rounding.
+N7
+Revocation: revoking a task token or a tenant stops gateway calls within 5 seconds.
+Timed test.
+N8
+Fail closed: if the gateway is down, calls fail. There is no direct egress fallback.
+Kill the gateway mid task. No packet leaves the sandbox pool.
+N9
+Tool allowlist per template (MCP servers and hosts), with an audit record per call.
+A call to an unlisted tool is denied and logged.
+Unblocking provider access now. Do not open egress from the pod to the provider. Stand up the gateway first and let the pod reach only DNS and the gateway. If you need a demonstration before the gateway exists, the AWS blueprint's domain allowlist for model APIs is the temporary route. It gives the pod its own cloud role, which N5 forbids later.
+Gateway choice. Spike two candidates against N4 to N9 before picking:
+• agentgateway keeps provider keys in a cluster Secret and hands each client a revocable virtual key. Its token budgets live in an external rate limit server with windows up to a day, and the request that crosses a limit still completes.
+• Agent Router, formerly Envoy AI Gateway, accepts a per request upstream credential from a trusted filter and can tunnel provider traffic through a CONNECT proxy.
+Either way, Agent OS owns the task token issuer and the binding of usage to a task. The gateway is only the data path.
+Nitro Sandboxes on EKS. Per the AWS launch post, it needs Kubernetes 1.36 or later, uses EKS Pod Identity, and on standard node groups needs a sandbox enabled AMI. The post describes no suspend or resume, so checkpointing stays on the gVisor path.
+Sessions, recovery, budgets and policy requirements
+Use agent-sandbox for warm sessions and Substrate for checkpoints, then build the two things upstream does not cover: a recovery contract for external side effects and budgets that outlive a session.
+ID
+Requirement
+Acceptance test
+R1
+Driver interface in Go: create, start, stop, delete and status, plus optional suspend, resume and snapshot advertised through a capabilities call. One conformance suite runs against every driver.
+The Job driver passes. A fake driver that overstates its capabilities fails.
+R2
+agent-sandbox driver: a session is a SandboxClaim against a SandboxWarmPool, and the SandboxTemplate carries the pod baseline and network policy.
+Warm claim start time is measured on EKS and reported beside cold start.
+R3
+substrate driver, added only after its checkpoint and restore is proven on your EKS nodes.
+Restore onto a different node and onto a different instance type. Record the result either way.
+R4
+Recovery contract, written down and tested: files survive, memory survives only with a checkpoint driver, open connections do not, and in flight tool calls are resolved by idempotency key.
+One contract test per line, run against each driver.
+R5
+Side effect journal at the gateway: every mutating external call stores task, attempt, tool, idempotency key, request hash and outcome. A retry or resume returns the recorded outcome instead of calling again.
+Kill the node after an external write and before the task records it. Exactly one write exists after recovery.
+R6
+Compensation hooks: a tool may register an undo action that cancellation or policy can trigger.
+Cancel after a reversible write. The undo runs once and is audited.
+B1
+Budgets as a hierarchy (organisation, team, user, agent, task) over tokens, model spend, compute seconds and task count, with windows per task, rolling and calendar, and a choice of hard stop or alert.
+Tests per level and per window.
+B2
+Reservation accounting: reserve before a call and settle after, so concurrent calls cannot overshoot.
+100 concurrent calls with room for 10. At most 10 pass.
+B3
+Durable and cross provider: budgets survive restarts and span providers, runtimes and sessions.
+Restart gateway and controller mid window. Totals are unchanged and two providers sum correctly.
+B4
+Policy in Cedar at two points: task admission and each gateway call. Default deny. Bundles are versioned and signed, and every decision logs the bundle version.
+A tampered bundle is rejected. The decision log names the version.
+B5
+Approvals: a policy outcome can pause a task until a named approver responds, with an expiry.
+The task waits, resumes on approval, and fails closed on expiry.
+Why B1 to B3 are yours to build: AWS scopes its counts to a session with a 24 hour idle window, and agentgateway's budgets stop at daily windows and let the crossing request through. Neither spans providers, runtimes and billing systems.
+Operations, observability and packaging requirements
+Operating effort is the least contested advantage on EKS, so installation, diagnosis and proof are product features.
+ID
+Requirement
+Acceptance test
+O1
+Metrics: admission latency, queue depth, start latency by driver and by warm or cold, duration, outcome by reason code, cancel latency, event lag, gateway latency, tokens.
+Dashboards exist and each metric has an alert threshold.
+O2
+OpenTelemetry traces from submit through every model and tool call, with trace context passed into the sandbox.
+One trace shows a whole agent run.
+O3
+Audit log: append only and hash chained, covering admission, policy, credential exchange, approval and cancellation, exported as OCSF JSON.
+Altering one record breaks verification.
+O4
+Cost per task: CPU seconds, memory, storage, egress, a share of node price and of warm pool idle time, plus token spend. Report cost per correctly completed task.
+Costs for a test run reconcile with the AWS bill and the provider usage report within a stated tolerance.
+O5
+Service level objectives, set after the first baseline: admission latency, warm start, terminal state guarantee, event lag.
+Burn rate alerts fire during a fault test.
+P1
+Tenancy: a namespace per tenant, ResourceQuota and LimitRange, tenant scoped network policy and keys.
+Cross tenant canaries fail.
+P2
+Install: a Helm chart plus a Terraform module that extends the AWS Agent Sandbox blueprint.
+Fresh account to first sandboxed task with one command sequence, steps counted.
+P3
+agentos doctor: checks Kubernetes version, CNI mode, RuntimeClasses, Pod Security labels, metadata hop limit, node pools and component versions, and prints the fix for each failure.
+Each misconfiguration is detected in a test cluster.
+P4
+agentos conformance: lifecycle invariants plus escape canaries against any cluster, with a signed report.
+It runs unmodified against the AWS blueprint.
+P5
+agentos bench: the upstream comparison as a repeatable harness.
+Two runs on the same cluster agree within a stated margin.
+P6
+Upgrades: zero downtime, one version of forward and backward schema compatibility, tested rollback.
+Upgrade and roll back under load. No task is lost.
+P7
+Supply chain: SBOM, signed images, vulnerability scan in CI, pinned upstream versions.
+The release pipeline fails on an unsigned artifact.
+P8
+Documents: a threat model that lists every trusted component that reads sandbox output, an architecture note, and runbooks for stuck tasks, store failover, gateway outage and node pool exhaustion.
+A new engineer resolves a staged incident from the runbook alone.
+P9
+Agent facing interface: an MCP server exposing submit, status, cancel and stream, beside the Python client.
+An off the shelf agent harness drives Agent OS with no custom code.
+P8's inventory matters because published escapes rarely break the isolation itself. They plant output that a trusted component outside the sandbox later runs or loads.
+Adopt, integrate or build
+Adopt or integrate ten commodity capabilities and build five. The last column says what each choice costs or leaves open.
+Capability
+Best existing implementation
+Decision
+What to know
+VM isolation per pod on EKS
+AWS Nitro Sandboxes (isolated-sandbox)
+Adopt as an option
+One pod field. Kubernetes 1.36 or later. No suspend or resume described.
+Syscall isolation
+gVisor (runsc)
+Adopt as an option
+Needs your own nodes, not Auto Mode. It is the path Substrate checkpoints.
+Sandbox objects and warm pools
+agent-sandbox
+Integrate as a driver
+Sandbox, SandboxTemplate, SandboxClaim and SandboxWarmPool, with Go and Python clients.
+Checkpoint, restore, density
+Agent Substrate 1.0
+Integrate after EKS proof
+The vendor claims restore in under 500 ms. Portability beyond GKE is claimed, not shown.
+Egress supervision
+OpenShell
+Integrate later; start with NetworkPolicy plus gateway
+Its Kubernetes driver returns unimplemented for suspend at v0.1.9.
+Model and tool gateway
+agentgateway or Agent Router
+Adopt one after a spike
+See the gateway choice above.
+Policy language
+Cedar
+Adopt
+OpenShell is adopting it and AWS policy engines are Cedar compatible.
+Job queueing and quotas
+Kueue
+Evaluate against current admission
+Governs Job and JobSet as an admission step before the scheduler.
+Audit and telemetry formats
+OCSF and OpenTelemetry
+Adopt
+OpenShell already exports OCSF, so your records line up with it.
+EKS reference environment
+AWS Agent Sandbox blueprint
+Extend, and use as the baseline
+Ships gVisor nodes, agent-sandbox, domain egress policy and a five check conformance script. Snapshots, budgets and audit are not covered.
+Task lifecycle, durable admission, events
+Agent OS
+Build
+The spine: C1 to C15.
+Task bound credentials and side effect journal
+None found
+Build
+N5 and R5.
+Durable budgets across providers
+None found
+Build
+B1 to B3.
+Recovery contract
+None found
+Build
+R4 and R6.
+Doctor, conformance and bench for EKS
+None found
+Build
+P3 to P5. Also your best upstream contribution.
+Ideas worth borrowing from hosted products, without their code: a small template registry and SDK surface (E2B, Daytona), credential injection at the network boundary (Vercel, Cloudflare, Docker), policy on each tool call with prior approval rules (AWS AgentCore), and releasing compute while idle with restore on demand (Substrate).
+Robustness test matrix
+Robustness is proven by breaking things on purpose. These sixteen tests run on EKS before any release is called stable.
+ID
+Fault or load
+Pass criterion
+T1
+Controller killed at random points during admission, 1,000 runs
+No task lost or duplicated
+T2
+Kubernetes API unavailable for 60 seconds
+Tasks converge and no orphan pods remain
+T3
+Node drain or spot interruption mid task
+Ends infra_failure, retries with the same key, no duplicate external write
+T4
+Store restart
+API returns 503 with Retry-After and no acknowledged submit is lost
+T5
+10x submit burst
+429 and queueing; admitted tasks still meet the latency objective
+T6
+Stalled stream clients
+Memory stays bounded; the server closes with a resumable cursor
+T7
+Cancel 1,000 running tasks at once
+All terminal within the cancellation bound
+T8
+Task ignores SIGTERM
+SIGKILL at the grace period; ends CANCELLED or TIMED_OUT
+T9
+Fork bomb, memory hog, disk fill
+Contained, correct reason code, node stays Ready
+T10
+Egress in the first 500 ms, DNS tunnelling, metadata and API server access
+All blocked
+T11
+Secret scan of pod spec, environment, files and logs
+Zero provider credentials
+T12
+Gateway killed mid task
+Calls fail closed; no direct egress
+T13
+100 concurrent calls at a budget limit
+No overshoot beyond the reserved calls
+T14
+Upgrade then rollback under load
+No task lost; event sequences stay continuous
+T15
+Soak: 100,000 tasks over 24 hours
+No leak in memory, goroutines or file handles; store growth bounded by retention
+T16
+API fuzzing and tenant authorization matrix
+No crash; zero cross tenant reads
+What not to build, and the main risks
+Do not build a runtime, a checkpoint engine, an egress proxy, a policy language or a hosted sandbox cloud. Each already has a foundation backed or cloud native implementation, and each would consume the time your differentiators need.
+• Upstream moves weekly. Pin every upstream version and run driver conformance against both pinned and latest in CI.
+• AWS may ship more. re:Invent runs November 30 to December 4. Check AWS launches again before phase 3 and add any new baseline.
+• Both directions are contested. Control and execution each have a CNCF Sandbox project. The phase 3 gate is the protection against building what upstream gives away.
+• Scope creep. A feature with no requirement ID waits until the current phase exits.
+Report template
+Send these eight items back after each phase so the next review takes minutes.
+1.  Gap audit: every requirement ID with its status (Implemented, Partial or Missing), the test name and path that proves it, and notes.
+2.  Cluster facts: EKS version, node types, CNI and mode, RuntimeClasses, and the versions of agent-sandbox, Kueue and the gateway.
+3.  Measurements with sample size: admission latency, cold and warm start, cancel latency, success rate and cost per task, each at p50 and p95.
+4.  Test matrix: T1 to T16 as pass, fail or not run, with a reproduction for each failure.
+5.  Invariant violations found, including ones already fixed.
+6.  Deviations from this plan and the reason for each.
+7.  Upstream issues or pull requests filed.
+8.  Decisions that need a call.
+Sources
+Pages opened for the facts above, as of the date at the top.
+• AWS Nitro Sandboxes on Amazon EKS, AWS Containers blog
+• Agent Sandbox on EKS blueprint, awslabs
+• Network policy modes for the VPC CNI, Amazon EKS user guide
+• Session based temporal policies, Amazon Bedrock AgentCore
+• Agent Sandbox documentation, Kubernetes SIG Apps
+• Agent Substrate 1.0 announcement, Google Cloud, and its gVisor checkpoint code
+• OpenShell on Kubernetes, NVIDIA, its Kubernetes driver source at v0.1.9, and the CNCF welcome post
+• agentgateway virtual keys
+• Agent Router v1.1 release notes, formerly Envoy AI Gateway
+• Kueue, Kubernetes SIG Scheduling
+• Sandbox escape research, Pillar Security
+• AWS re:Invent 2026 dates
