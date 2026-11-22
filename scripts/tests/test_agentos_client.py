@@ -24,6 +24,8 @@ TOKEN = "synthetic-test-token-" + "x" * 32
 RUN = "a" * 32
 OTHER = "b" * 32
 AT = "2026-11-21T00:00:00Z"
+EPOCH = "c" * 32
+NEW_EPOCH = "d" * 32
 
 
 def record(state="succeeded", run_id=RUN, count=2):
@@ -32,18 +34,18 @@ def record(state="succeeded", run_id=RUN, count=2):
 
 
 def event(sequence, state="running", run_id=RUN):
-    return {"sequence": sequence, "run_id": run_id, "at": AT, "state": state}
+    return {"sequence": sequence, "run_id": run_id, "at": AT, "state": state, "store_epoch": EPOCH}
 
 
 def frame(value, event_type="run", event_id=None):
     prefix = "event: " + event_type + "\n"
     if event_type == "run" or event_id is not None:
-        prefix += "id: " + str(value.get("sequence") if event_id is None else event_id) + "\n"
+        prefix += "id: " + ((value.get("store_epoch", EPOCH) + ":" + str(value.get("sequence"))) if event_id is None else str(event_id)) + "\n"
     return (prefix + "data: " + json.dumps(value, ensure_ascii=False) + "\n\n").encode()
 
 
 def end(sequence, state="succeeded", run_id=RUN):
-    return frame({"run_id": run_id, "state": state, "last_event_id": sequence}, "end")
+    return frame({"run_id": run_id, "state": state, "last_event_id": EPOCH + ":" + str(sequence), "store_epoch": EPOCH}, "end")
 
 
 class Stub(http.server.ThreadingHTTPServer):
@@ -89,19 +91,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        for key, value in (headers or {}).items():
-            self.send_header(key, value)
+        defaults = {"AgentOS-Store-Epoch": EPOCH}
+        if "/events?" in self.path and status in (200, 204):
+            defaults["AgentOS-Events-Version"] = "3"
+        defaults.update(headers or {})
+        for key, value in defaults.items():
+            if value is not None:
+                self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
         self.wfile.flush()
 
-    def json(self, value, status=200):
-        self.raw(json.dumps(value).encode(), status)
+    def json(self, value, status=200, headers=None):
+        self.raw(json.dumps(value).encode(), status, headers=headers)
 
-    def sse(self, body):
+    def sse(self, body, headers=None):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Connection", "close")
+        defaults = {"AgentOS-Events-Version": "3", "AgentOS-Store-Epoch": EPOCH}
+        defaults.update(headers or {})
+        for key, value in defaults.items():
+            if value is not None:
+                self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
         self.wfile.flush()
@@ -152,7 +164,7 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(request["headers"]["Idempotency-Key"], "persisted-key")
             self.assertEqual(json.loads(request["body"]), {"template": "python", "command": ["python", "-c", "print(1)"], "timeout_seconds": 30})
             streams = [r for r in server.requests if "/events?" in r["path"]]
-            self.assertEqual({k.lower(): v for k, v in streams[0]["headers"].items()}["agentos-events-version"], "2")
+            self.assertEqual({k.lower(): v for k, v in streams[0]["headers"].items()}["agentos-events-version"], "3")
 
     def test_coded_json_records_and_legacy_omissions_remain_compatible(self):
         cases = [(state, None) for state in sorted(sdk.STATES)]
@@ -213,7 +225,7 @@ class ClientTests(unittest.TestCase):
         with serving(router) as server:
             values = list(self.client(server).iter_events(RUN, timeout=2))
             self.assertEqual(values, [event(1, "queued"), coded])
-            self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", "1"])
+            self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", EPOCH + ":1"])
             self.assertTrue(all(r["headers"]["Authorization"] == "Bearer " + TOKEN for r in server.requests))
 
     def test_invalid_reason_code_never_advances_resumable_cursor(self):
@@ -238,8 +250,8 @@ class ClientTests(unittest.TestCase):
                 self.assertEqual(len(server.requests), 1)  # Malformed data is not retried automatically.
                 # The caller resumes using the last event it actually received;
                 # sequence 2 must still be delivered rather than silently skipped.
-                self.assertEqual(list(client.iter_events(RUN, after=last_validated, timeout=2)), [fixed])
-                self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", "1"])
+                self.assertEqual(list(client.iter_events(RUN, after=EPOCH + ":" + str(last_validated), timeout=2)), [fixed])
+                self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", EPOCH + ":1"])
                 self.assertTrue(all(r["headers"]["Authorization"] == "Bearer " + TOKEN for r in server.requests))
 
     def test_required_idempotency_and_policy_input_validation_precede_network(self):
@@ -283,11 +295,11 @@ class ClientTests(unittest.TestCase):
             after = parse_qs(urlsplit(h.path).query)["after"][0]
             if after == "0":
                 h.sse(frame(event(1, "queued")) + b'event: run\nid: 2\ndata: {"interrupted":')
-            elif after == "1":
+            elif after == EPOCH + ":1":
                 value = event(2, "succeeded")
                 value["reason"] = "résumé"
                 # Legal multiline SSE data and a comment within the frame.
-                body = b"event: run\nid: 2\n: heartbeat\ndata: {\n"
+                body = ("event: run\nid: " + EPOCH + ":2\n: heartbeat\ndata: {\n").encode()
                 body += ("data: " + json.dumps(value, ensure_ascii=False)[1:] + "\n\n").encode()
                 h.sse(body + end(2))
             else:
@@ -297,7 +309,7 @@ class ClientTests(unittest.TestCase):
             result = list(self.client(server).iter_events(RUN, timeout=2))
             self.assertEqual([e["sequence"] for e in result], [1, 2])
             self.assertEqual(result[1]["reason"], "résumé")
-            self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", "1"])
+            self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", EPOCH + ":1"])
 
     def test_terminal_204_requires_matching_terminal_record(self):
         def router(h):
@@ -305,15 +317,15 @@ class ClientTests(unittest.TestCase):
 
         with serving(router) as server:
             client = self.client(server)
-            self.assertEqual(list(client.iter_events(RUN, after=2, timeout=2)), [])
-            self.assertEqual(client.wait(RUN, after=2, timeout=2)["state"], "succeeded")
+            self.assertEqual(list(client.iter_events(RUN, after=EPOCH + ":2", timeout=2)), [])
+            self.assertEqual(client.wait(RUN, after=EPOCH + ":2", timeout=2)["state"], "succeeded")
         for state, count in (("running", 2), ("succeeded", 1)):
             with self.subTest(state=state, count=count):
                 def invalid(h):
                     h.raw(status=204) if "/events?" in h.path else h.json(record(state, count=count))
 
                 with serving(invalid) as server, self.assertRaises(sdk.AgentOSProtocolError):
-                    list(self.client(server).iter_events(RUN, after=2, timeout=2))
+                    list(self.client(server).iter_events(RUN, after=EPOCH + ":2", timeout=2))
 
     def test_malformed_or_cross_run_events_fail_without_reconnect(self):
         cases = [
@@ -348,6 +360,98 @@ class ClientTests(unittest.TestCase):
             self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", "0"])
             self.assertTrue(all(r["headers"]["Authorization"] == "Bearer " + TOKEN for r in server.requests))
             self.assertNotIn(TOKEN, repr(client))
+
+    def test_restore_safe_cursor_validation_precedes_network(self):
+        invalid = [True, False, 1, 2, sdk.MAX_CURSOR, -1, 0.0, "0", "1", "",
+                   EPOCH + ":01", EPOCH + ":-1", EPOCH.upper() + ":1", EPOCH + ":" + str(sdk.MAX_CURSOR + 1),
+                   EPOCH + ":1\n", "x" * 1024]
+        with serving(lambda h: h.sse(frame(event(1, "succeeded")) + end(1))) as server:
+            client = self.client(server)
+            for cursor in invalid:
+                with self.subTest(cursor_type=type(cursor).__name__), self.assertRaises(ValueError):
+                    list(client.iter_events(RUN, after=cursor))
+            self.assertEqual(server.requests, [])
+            self.assertEqual(list(client.iter_events(RUN, after=EPOCH + ":0", timeout=1))[0]["sequence"], 1)
+            self.assertEqual(parse_qs(urlsplit(server.requests[0]["path"]).query)["after"], [EPOCH + ":0"])
+
+    def test_format_three_requires_explicit_version_and_valid_epoch(self):
+        invalid = [{"AgentOS-Events-Version": version} for version in (None, "1", "2", "3, 3")]
+        invalid += [{"AgentOS-Store-Epoch": epoch} for epoch in (None, "", "A" * 32, "g" * 32, TOKEN)]
+        for headers in invalid:
+            with self.subTest(header=next(iter(headers))), serving(lambda h: h.sse(frame(event(1, "succeeded")) + end(1), headers=headers)) as server:
+                with self.assertRaises(sdk.AgentOSProtocolError) as caught:
+                    list(self.client(server).iter_events(RUN, timeout=1))
+                self.assertNotIn(TOKEN, str(caught.exception))
+                self.assertEqual(len(server.requests), 1)
+                self.assertEqual(server.requests[0]["headers"]["AgentOS-Events-Version"], "3")
+
+    def test_epoch_conflict_is_not_retried_or_downgraded_even_before_first_event(self):
+        for delivered in (0, 1):
+            def router(h):
+                if len(h.server.requests) == 1:
+                    h.sse(frame(event(1, "queued")) if delivered else b": heartbeat\n\n")
+                else:
+                    h.json({"error": {"code": "store_epoch_mismatch", "message": TOKEN}}, 409)
+
+            with self.subTest(delivered=delivered), serving(router) as server:
+                values = self.client(server).iter_events(RUN, timeout=2)
+                if delivered:
+                    self.assertEqual(next(values)["sequence"], 1)
+                with self.assertRaises(sdk.AgentOSError) as caught:
+                    list(values)
+                self.assertEqual(caught.exception.status_code, 409)
+                self.assertFalse(caught.exception.retryable)
+                self.assertNotIn(TOKEN, str(caught.exception))
+                self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", EPOCH + ":" + str(delivered)])
+                self.assertTrue(all(r["headers"]["AgentOS-Events-Version"] == "3" for r in server.requests))
+                self.assertTrue(all(r["headers"]["Authorization"] == "Bearer " + TOKEN for r in server.requests))
+
+    def test_changed_epoch_on_successful_reconnect_fails_before_new_history(self):
+        def router(h):
+            if len(h.server.requests) == 1:
+                h.sse(frame(event(1, "queued")))
+            else:
+                h.sse(frame(dict(event(2, "succeeded"), store_epoch=NEW_EPOCH)), headers={"AgentOS-Store-Epoch": NEW_EPOCH})
+
+        with serving(router) as server:
+            values = self.client(server).iter_events(RUN, timeout=2)
+            self.assertEqual(next(values)["sequence"], 1)
+            with self.assertRaises(sdk.AgentOSProtocolError) as caught:
+                next(values)
+            self.assertEqual(caught.exception.code, "store_epoch_mismatch")
+            self.assertEqual(len(server.requests), 2)
+            self.assertTrue(server.requests[1]["path"].endswith("after=" + EPOCH + ":1"))
+
+    def test_frame_epoch_and_id_must_match_negotiated_history(self):
+        missing = event(1, "succeeded")
+        del missing["store_epoch"]
+        invalid = [frame(missing), frame(dict(event(1, "succeeded"), store_epoch=NEW_EPOCH)),
+                   frame(event(1, "succeeded"), event_id=NEW_EPOCH + ":1"), frame(event(1, "succeeded"), event_id=1)]
+        for payload in ({"run_id": RUN, "state": "succeeded", "last_event_id": EPOCH + ":1"},
+                        {"run_id": RUN, "state": "succeeded", "last_event_id": EPOCH + ":1", "store_epoch": NEW_EPOCH},
+                        {"run_id": RUN, "state": "succeeded", "last_event_id": NEW_EPOCH + ":1", "store_epoch": EPOCH},
+                        {"run_id": RUN, "state": "succeeded", "last_event_id": 1, "store_epoch": EPOCH}):
+            invalid.append(frame(event(1, "succeeded")) + frame(payload, "end"))
+        for body in invalid:
+            with serving(lambda h: h.sse(body)) as server:
+                with self.assertRaises(sdk.AgentOSProtocolError):
+                    list(self.client(server).iter_events(RUN, timeout=1))
+                self.assertEqual(len(server.requests), 1)
+
+    def test_terminal_confirmation_rejects_restore_or_missing_epoch(self):
+        for catchup in (False, True):
+            for observed in (NEW_EPOCH, None):
+                def router(h):
+                    if "/events?" in h.path:
+                        h.raw(status=204) if catchup else h.sse(frame(event(1, "running")) + frame(event(2, "succeeded")) + end(2))
+                    else:
+                        h.json(record(), headers={"AgentOS-Store-Epoch": observed})
+
+                with self.subTest(catchup=catchup, observed=observed), serving(router) as server:
+                    with self.assertRaises(sdk.AgentOSProtocolError) as caught:
+                        self.client(server).wait(RUN, after=EPOCH + ":2" if catchup else 0, timeout=1)
+                    self.assertEqual(caught.exception.code, "invalid_store_epoch" if observed is None else "store_epoch_mismatch")
+                    self.assertEqual(len(server.requests), 2)
 
     def test_event_get_retry_is_bounded_and_status_aware(self):
         def router(h):
@@ -398,6 +502,8 @@ class ClientTests(unittest.TestCase):
         def router(h):
             h.send_response(200)
             h.send_header("Content-Type", "text/event-stream")
+            h.send_header("AgentOS-Events-Version", "3")
+            h.send_header("AgentOS-Store-Epoch", EPOCH)
             h.send_header("Connection", "close")
             h.end_headers()
             try:

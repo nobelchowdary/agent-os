@@ -17,7 +17,9 @@ import (
 
 type BackupInfo struct {
 	SchemaVersion uint64 `json:"schema_version"`
+	StoreEpoch    string `json:"store_epoch"`
 	SHA256        string `json:"sha256"`
+	SourceSHA256  string `json:"source_sha256,omitempty"`
 	Runs          int    `json:"runs"`
 	ActiveRuns    int    `json:"active_runs"`
 	Bytes         int64  `json:"bytes"`
@@ -130,8 +132,10 @@ func BackupOffline(source, destination string) (BackupInfo, error) {
 }
 
 // RestoreOffline verifies the operator-provided checksum and all database/index
-// invariants before publishing a new file. It never restores active metadata:
-// replaying an old activation intent could duplicate an external effect.
+// invariants, then gives the restored history a new epoch before publication.
+// SHA256 names the resulting file; SourceSHA256 names the trusted source input.
+// It never restores active metadata: replaying an old activation intent could
+// duplicate an external effect.
 func RestoreOffline(source, destination, expectedSHA256 string) (BackupInfo, error) {
 	digest, err := hex.DecodeString(expectedSHA256)
 	if err != nil || len(digest) != sha256.Size || len(expectedSHA256) != sha256.Size*2 {
@@ -182,8 +186,8 @@ func inspectOffline(path string, drained bool, destination io.Writer) (info Back
 			writer = io.MultiWriter(destination, hash)
 		}
 		// The read-only database lock excludes supported writers for the entire
-		// transaction/copy. Preserve exact bytes (including unused tail pages),
-		// so the trusted checksum remains identical after a restore.
+		// transaction/copy. Preserve exact source bytes, including unused tail
+		// pages. Restore changes metadata only after verifying this source hash.
 		n, err := io.Copy(writer, io.NewSectionReader(file, 0, before.Size()))
 		if err != nil {
 			return err
@@ -204,18 +208,54 @@ func inspectOffline(path string, drained bool, destination io.Writer) (info Back
 }
 
 func copyOffline(source, destination, expected string) (BackupInfo, error) {
-	return publishOffline(destination, func(file *os.File) (BackupInfo, error) {
+	var transform func(string) error
+	if expected != "" {
+		transform = rotateRestoredEpoch
+	}
+	return publishOfflineWithTransform(destination, func(file *os.File) (BackupInfo, error) {
 		info, err := inspectOffline(source, true, file)
 		if err == nil && expected != "" && info.SHA256 != expected {
 			err = ErrChecksum
 		}
 		return info, err
+	}, transform)
+}
+
+func rotateRestoredEpoch(path string) (err error) {
+	db, _, fresh, err := openDatabase(path, false)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	if fresh {
+		return ErrIntegrity
+	}
+	if err := initializeSchema(db, false); err != nil {
+		return err
+	}
+	return db.Update(func(tx *bolt.Tx) error {
+		info, err := validateSnapshot(tx)
+		if err != nil {
+			return err
+		}
+		if info.ActiveRuns != 0 {
+			return ErrActive
+		}
+		epoch, err := randomEpoch(info.StoreEpoch)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(metadataBucket).Put(epochKey, []byte(epoch))
 	})
 }
 
 // A same-directory hard link is an atomic no-overwrite publication primitive.
 // Until validation and fsync complete, the only name is the private temp file.
 func publishOffline(destination string, write func(*os.File) (BackupInfo, error)) (info BackupInfo, err error) {
+	return publishOfflineWithTransform(destination, write, nil)
+}
+
+func publishOfflineWithTransform(destination string, write func(*os.File) (BackupInfo, error), transform func(string) error) (info BackupInfo, err error) {
 	destination, err = privatePath(destination, false)
 	if err != nil {
 		return info, err
@@ -276,6 +316,28 @@ func publishOffline(destination string, write func(*os.File) (BackupInfo, error)
 		return info, ErrIntegrity
 	}
 	current, statErr := os.Lstat(temp)
+	if statErr != nil || !regularPrivateFile(current) || !os.SameFile(created, current) {
+		return info, ErrIntegrity
+	}
+	if transform != nil {
+		if err = transform(temp); err != nil {
+			return info, err
+		}
+		// Restore is allowed to change epoch/schema metadata only after the
+		// source has passed its trusted checksum and full integrity checks.
+		// Independently check all final bytes and the drained invariant again.
+		final, checkErr := CheckOffline(temp)
+		if checkErr != nil {
+			return info, checkErr
+		}
+		if final.ActiveRuns != 0 || final.Runs != copied.Runs || final.SchemaVersion != currentSchemaVersion ||
+			!validEpoch(final.StoreEpoch) || final.StoreEpoch == copied.StoreEpoch {
+			return info, ErrIntegrity
+		}
+		final.SourceSHA256 = copied.SHA256
+		info = final
+	}
+	current, statErr = os.Lstat(temp)
 	if statErr != nil || !regularPrivateFile(current) || !os.SameFile(created, current) {
 		return info, ErrIntegrity
 	}

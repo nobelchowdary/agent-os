@@ -163,7 +163,7 @@ func TestLegacySchemaMigrationPreservesEveryDataValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := s.SchemaVersion()
-	if err != nil || version != 1 {
+	if err != nil || version != currentSchemaVersion {
 		t.Fatalf("schema version = %d %v", version, err)
 	}
 	if err := s.Close(); err != nil {
@@ -192,7 +192,7 @@ func TestSchemaRejectsFutureMalformedAndIncompleteWithoutMutation(t *testing.T) 
 	}{
 		{"future", func(tx *bolt.Tx) error {
 			value := make([]byte, 8)
-			binary.BigEndian.PutUint64(value, 2)
+			binary.BigEndian.PutUint64(value, currentSchemaVersion+1)
 			return tx.Bucket(metadataBucket).Put(schemaKey, value)
 		}},
 		{"malformed", func(tx *bolt.Tx) error { return tx.Bucket(metadataBucket).Put(schemaKey, []byte("1")) }},
@@ -366,7 +366,13 @@ func TestAcceptedUnsyncedFreelistRestoresNormalDurableWritePolicy(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Update(func(tx *bolt.Tx) error { return tx.Bucket(metadataBucket).Put(schemaKey, make([]byte, 8)) }); err != nil {
+	if err := db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(metadataBucket)
+		if err := meta.Delete(epochKey); err != nil {
+			return err
+		}
+		return meta.Put(schemaKey, make([]byte, 8))
+	}); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}
@@ -403,7 +409,7 @@ func TestOfflineBackupRestorePreservesTenantHistoryAndIdempotency(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.SchemaVersion != 1 || info.Runs != 3 || info.ActiveRuns != 0 || info.Bytes <= 0 || info.SHA256 != sourceHash || fileDigest(t, source) != sourceHash {
+	if info.SchemaVersion != currentSchemaVersion || info.Runs != 3 || info.ActiveRuns != 0 || info.Bytes <= 0 || info.SHA256 != sourceHash || fileDigest(t, source) != sourceHash {
 		t.Fatalf("backup evidence wrong or source changed: %+v", info)
 	}
 	checked, err := CheckOffline(backup)
@@ -412,7 +418,7 @@ func TestOfflineBackupRestorePreservesTenantHistoryAndIdempotency(t *testing.T) 
 	}
 	destination := filepath.Join(privateTestDir(t), "restored.db")
 	restored, err := RestoreOffline(backup, destination, strings.ToUpper(info.SHA256))
-	if err != nil || restored != info || fileDigest(t, destination) != info.SHA256 {
+	if err != nil || restored.SourceSHA256 != info.SHA256 || restored.SHA256 == info.SHA256 || restored.StoreEpoch == info.StoreEpoch || !validEpoch(restored.StoreEpoch) || fileDigest(t, destination) != restored.SHA256 {
 		t.Fatalf("restore: %+v %v", restored, err)
 	}
 	for _, path := range []string{backup, destination} {

@@ -555,6 +555,11 @@ func TestObserveUsesTerminalConditionsAndBoundsReasons(t *testing.T) {
 	if _, err := client.BatchV1().Jobs("work").Create(ctx, job, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	pod := ownedPod(job, "observed-agent")
+	pod.Status = corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "agent", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}}
+	if _, err := client.CoreV1().Pods("work").Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name      string
 		status    batchv1.JobStatus

@@ -13,7 +13,7 @@ This first alpha provides a runnable execution API and constrained Python/Node e
 - Bearer-token authentication with tenant-scoped create, list, status, bounded logs and cancellation.
 - Durable run records and lifecycle events using transactional embedded storage.
 - Structured outcome/cleanup codes, versioned metadata storage and drained offline check/backup/restore commands.
-- Resumable live lifecycle events, bounded tenant-scoped history pagination and operational status.
+- Restore-aware live lifecycle events, epoch-bound tenant-scoped history pagination and operational status.
 - Controller wakeups on committed admission/cancellation, failure/recovery health and graceful stream shutdown.
 - A standard-library Python client and an external harness example for submitting and monitoring tools.
 - Atomic tenant/global admission limits and persistent idempotency keys for duplicate submissions.
@@ -53,6 +53,7 @@ Workload networking is denied by default; the Nitro profile also requests a NIC-
 - [Launch and live API](docs/LIVE_API.md): agent-harness integration, event replay, health and pagination; [Python client](sdk/python/README.md).
 - [API contract](docs/API_CONTRACT.md): embedded OpenAPI, stable error codes and request compatibility.
 - [Outcome codes](docs/OUTCOME_CODES.md) and [offline storage recovery](docs/STORAGE_RECOVERY.md): cause evidence, legacy compatibility and maintenance limits.
+- [November 22 review bundle](docs/reviews/2026-11-22/README.md): exact historical patch/report, requirement-to-test matrix, restore contract and workbook findings.
 - [Robustness work](docs/robustness/README.md): the supplied plan, audit of all 70 requirements and phase 0 gates.
 - [Architecture decision](docs/decisions/0001-initial-execution-slice.md): the first backend and its scope.
 - [Roadmap](docs/ROADMAP.md): capability gates driven by workload evidence and customer needs.

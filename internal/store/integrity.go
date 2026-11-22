@@ -78,6 +78,9 @@ func validateSnapshot(tx *bolt.Tx) (BackupInfo, error) {
 		return info, err
 	}
 	info.SchemaVersion = version
+	if version == currentSchemaVersion {
+		info.StoreEpoch = string(tx.Bucket(metadataBucket).Get(epochKey))
+	}
 	records := tx.Bucket(recordsBucket)
 	index := tx.Bucket(tenantIndexBucket)
 	active := tx.Bucket(activeBucket)

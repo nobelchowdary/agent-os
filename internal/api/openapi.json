@@ -366,9 +366,9 @@
             "required": false,
             "schema": {
               "type": "string",
-              "maxLength": 1426
+              "maxLength": 1447
             },
-            "description": "Opaque tenant-scoped keyset cursor. No cross-request snapshot."
+            "description": "Opaque tenant-and-store-epoch keyset cursor. Stale epoch returns409 store_epoch_mismatch. Legacy unbound cursors rejected400. No cross-request snapshot."
           }
         ]
       }
@@ -384,6 +384,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Run"
+                }
+              }
+            },
+            "headers": {
+              "AgentOS-Store-Epoch": {
+                "description": "Durable store identity, regenerated on every offline restore. An epoch change requires explicit reconciliation; it does not recover lost admissions.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{32}$"
                 }
               }
             }
@@ -548,7 +557,7 @@
     "/v1/runs/{id}/events": {
       "get": {
         "operationId": "events",
-        "description": "SSE lifecycle replay then live invalidations. One-based IDs; JSON run events include sequence,run_id,at,state,optional reason and reason_code. Terminal end frame has run_id,state,last_event_id and no id. 60s or256-event rotation;10s heartbeats;4streams/tenant,32total;5s per write. Reconnect after last validated event. Not live stdout, physical-stop fencing or a hard real-time SLO. Stream format defaults to version1; request AgentOS-Events-Version: 2 for optional reason_code. The Python client negotiates this automatically.",
+        "description": "SSE lifecycle replay then live invalidations. Format1(default) and2 have numeric sequences and cannot detect restore;2 includes reason_code. Format3 requires opaque epoch:sequence resume IDs and includes store_epoch in run/end JSON. A fresh stream omits its cursor or uses after=0. An epoch mismatch returns409 store_epoch_mismatch before streaming; reconcile retained results before restarting. Never silently reset a saved cursor. One-based sequence; terminal end has run_id,state,last_event_id and no id. Format3 end last_event_id is a string;1/2 use integers. 60s or256-event rotation;10s heartbeats;4streams/tenant,32total;5s per write. No stdout or physical-stop fencing.",
         "responses": {
           "200": {
             "description": "Lifecycle SSE stream",
@@ -556,6 +565,26 @@
               "text/event-stream": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            },
+            "headers": {
+              "AgentOS-Store-Epoch": {
+                "description": "Durable store identity, regenerated on every offline restore. An epoch change requires explicit reconciliation; it does not recover lost admissions.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{32}$"
+                }
+              },
+              "AgentOS-Events-Version": {
+                "description": "Selected event format.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1",
+                    "2",
+                    "3"
+                  ]
                 }
               }
             }
@@ -585,7 +614,27 @@
             "$ref": "#/components/responses/Error"
           },
           "204": {
-            "description": "Already caught up with terminal run; no response body."
+            "description": "Already caught up with terminal run; no response body.",
+            "headers": {
+              "AgentOS-Store-Epoch": {
+                "description": "Durable store identity, regenerated on every offline restore. An epoch change requires explicit reconciliation; it does not recover lost admissions.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{32}$"
+                }
+              },
+              "AgentOS-Events-Version": {
+                "description": "Selected event format.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1",
+                    "2",
+                    "3"
+                  ]
+                }
+              }
+            }
           }
         },
         "parameters": [
@@ -604,10 +653,11 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "integer",
-              "minimum": 0
+              "type": "string",
+              "pattern": "^(?:[0-9]{1,20}|[a-f0-9]{32}:[0-9]{1,19})$",
+              "maxLength": 52
             },
-            "description": "Use after OR Last-Event-ID, never both; cannot exceed committed event count."
+            "description": "Use after OR Last-Event-ID, never both. Format3: epoch:sequence or fresh0 only. Format1/2: numeric sequence. Sequence cannot exceed committed history. Save cursor with run ID and tenant."
           },
           {
             "name": "Last-Event-ID",
@@ -615,10 +665,10 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^[0-9]+$",
-              "maxLength": 20
+              "pattern": "^(?:[0-9]{1,20}|[a-f0-9]{32}:[0-9]{1,19})$",
+              "maxLength": 52
             },
-            "description": "Last fully consumed lifecycle sequence for this run."
+            "description": "Use after OR Last-Event-ID, never both. Format3: epoch:sequence or fresh0 only. Format1/2: numeric sequence. Sequence cannot exceed committed history. Save cursor with run ID and tenant."
           },
           {
             "name": "AgentOS-Events-Version",
@@ -628,11 +678,12 @@
               "type": "string",
               "enum": [
                 "1",
-                "2"
+                "2",
+                "3"
               ],
               "default": "1"
             },
-            "description": "Version1 (default) omits reason_code for older strict clients. Version2 includes optional stored reason_code. IDs/replay/end framing are identical."
+            "description": "1(default) numeric IDs and no reason_code;2 numeric IDs plus reason_code;3 epoch-bound IDs plus store_epoch/reason_code. Updated Python client requires3; no silent downgrade."
           }
         ]
       }
@@ -688,7 +739,8 @@
               "stream_limit_exceeded",
               "streaming_unavailable",
               "unauthenticated",
-              "unsupported_media_type"
+              "unsupported_media_type",
+              "store_epoch_mismatch"
             ]
           },
           "error": {

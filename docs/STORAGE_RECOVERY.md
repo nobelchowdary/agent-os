@@ -14,7 +14,7 @@ These commands operate on a **stopped API's metadata database**. They do not con
   --output /absolute/private/backups/pre-upgrade.db
 ```
 
-The JSON result reports the operation, schema version, SHA-256, run count, active count and byte size. Keep the backup and its checksum securely; the checksum detects drift relative to a trusted retained value and does not authenticate who produced the file. Database files can contain submitted code, run metadata and idempotency keys. Keep them out of Git and public logs.
+The JSON result reports the operation, schema version, SHA-256, store epoch, run count, active count and byte size. Keep the backup and its checksum securely; the checksum detects drift relative to a trusted retained value and does not authenticate who produced the file. Database files can contain submitted code, run metadata and idempotency keys. Keep them out of Git and public logs.
 
 4. Exercise restore to a **new** path using the actual checksum from the backup result:
 
@@ -40,8 +40,16 @@ Failures use fixed categories rather than printing database contents or raw path
 
 ## Version compatibility
 
-The current store schema is version 1. Normal API startup transactionally initializes a new database or upgrades a complete legacy unversioned database (version 0) by adding version metadata. This migration does not rewrite records, specification fingerprints, idempotency keys or old terminal history. Unsupported newer/malformed versions and incomplete layouts fail closed.
+The current store schema is version 2. Normal API startup transactionally initializes a new database or upgrades a complete version 0/1 database by adding version metadata and a random durable store epoch. This migration does not rewrite records, specification fingerprints, idempotency keys or old terminal history. Unsupported newer/malformed versions and incomplete layouts fail closed. Ordinary restarts retain the epoch.
 
-Offline operations inspect/copy legacy version 0 without migrating or mutating the source. Restore preserves the copied bytes and checksum; subsequently opening that legacy database with the API adds version metadata, so its checksum then changes normally. New state changes also change database bytes.
+`check` and `backup` inspect/copy supported version 0/1/2 sources without migrating or mutating them. A legacy source without an epoch reports an empty epoch. Backup preserves exact bytes and checksum. Restore first verifies the trusted source checksum, then migrates a private temporary copy to schema 2 and rotates its epoch before publishing. It validates the transformed database again. Restore returns `source_sha256` for the input and `sha256` for the new destination; these differ because restore changes metadata. The source backup stays unchanged. A second restore of the same backup gets another new epoch.
+
+## Client recovery contract
+
+Restore recovers only metadata present in a drained backup. It does not restore Jobs, workload files, open connections or external actions. Active records are refused, so a supported restore cannot resume a stale running task or recreate a queued task. Admissions and idempotency keys committed after the backup are lost. Before reopening submissions, reconcile those acknowledged runs and their external effects with retained client records. An unknown idempotency key could otherwise admit duplicate work. The epoch detects a changed history; it cannot reconstruct it or make resubmission safe.
+
+Pagination cursors include the store epoch and tenant binding. SSE format 3 uses opaque `epoch:sequence` event IDs, includes `store_epoch` in lifecycle/end payloads, and returns `AgentOS-Store-Epoch` on stream/catch-up responses. Authenticated GET of an owned run returns the same header from the record's read snapshot. Saved cursors must also retain their run and tenant identity. A well-formed stale owned cursor returns HTTP 409 `store_epoch_mismatch`, including when its sequence still fits the restored history. Clients must reconcile before explicitly starting fresh. Missing/foreign runs remain 404; lost post-backup admissions cannot be distinguished from never-existing runs by this endpoint.
+
+Unbound legacy list cursors are rejected with 400. SSE formats 1/2 retain their original numeric IDs for existing clients and **cannot detect restore**. Upgrade consumers to format 3 before relying on recovery detection. The updated Python client requires format 3, validates epoch continuity on reconnect and terminal GET, and never silently downgrades or resets a stale cursor. Restores remain offline and require a maintenance window.
 
 There is no downgrade migration or zero-downtime upgrade guarantee. Binaries predating version checks cannot be trusted to reject a newer database. Keep matched binary/configuration/backups and use a maintenance window. The server/maintenance binary currently targets Linux/macOS Unix file and locking semantics; Windows ACL behavior and network-filesystem failure modes are not qualified. Full upgrade/rollback and fresh-cluster/PVC recovery campaigns remain unqualified on EKS.

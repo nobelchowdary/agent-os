@@ -67,9 +67,22 @@ def _run_id(value):
 
 
 def _cursor(value):
-    if type(value) is not int or not 0 <= value <= MAX_CURSOR:
-        raise ValueError("after must be an integer event cursor between 0 and 2**63-1")
-    return value
+    if type(value) is int and value == 0:
+        return None, 0
+    if isinstance(value, str):
+        match = re.fullmatch(r"([a-f0-9]{32}):(0|[1-9][0-9]{0,18})", value)
+        if match and int(match[2]) <= MAX_CURSOR:
+            return match[1], int(match[2])
+    raise ValueError("after must be 0 for a fresh stream or an epoch:sequence event cursor")
+
+
+def _response_epoch(response, expected=None):
+    epoch = response.getheader("AgentOS-Store-Epoch", "")
+    if not isinstance(epoch, str) or not re.fullmatch(r"[a-f0-9]{32}", epoch):
+        raise AgentOSProtocolError("invalid_store_epoch")
+    if expected is not None and epoch != expected:
+        raise AgentOSProtocolError("store_epoch_mismatch")
+    return epoch
 
 
 def _reason_code(value):
@@ -247,11 +260,13 @@ class AgentOSClient:
             raise AgentOSError("redirect_refused" if 300 <= status < 400 else "request_failed",
                                status_code=status, retryable=status in RETRY_STATUSES)
 
-    def _request(self, method, path, *, deadline=None, body=None, headers=None, allowed=(200,)):
+    def _request(self, method, path, *, deadline=None, body=None, headers=None, allowed=(200,), expected_epoch=None):
         deadline = time.monotonic() + self.request_timeout if deadline is None else deadline
         exchange = self._open(method, path, deadline=deadline, body=body, extra_headers=headers)
         try:
             self._status(exchange, allowed)
+            if expected_epoch is not None:
+                _response_epoch(exchange.response, expected_epoch)
             if exchange.response.getheader("Content-Type", "").split(";")[0].strip().lower() != "application/json":
                 raise AgentOSProtocolError("expected_json_content_type")
             encoded = bytearray()
@@ -307,8 +322,9 @@ class AgentOSClient:
     def get_run(self, run_id):
         return self._get_run(_run_id(run_id))
 
-    def _get_run(self, run_id, deadline=None):
-        return self._record(self._request("GET", "/v1/runs/" + run_id, deadline=deadline), run_id)
+    def _get_run(self, run_id, deadline=None, expected_epoch=None):
+        return self._record(self._request("GET", "/v1/runs/" + run_id, deadline=deadline,
+                                         expected_epoch=expected_epoch), run_id)
 
     def cancel(self, run_id):
         run_id = _run_id(run_id)
@@ -368,27 +384,36 @@ class AgentOSClient:
                 raise AgentOSProtocolError("event_line_too_large")
 
     def iter_events(self, run_id, *, after=0, timeout=300):
-        """Yield validated run events; reconnect from the last validated ID.
+        """Yield format-3 events; reconnect from the last validated epoch:ID.
 
         Consumes terminal `end` internally. Close the generator when stopping
         early. The timeout includes reconnects and time spent by the consumer;
-        OS DNS resolution cannot be interrupted by the socket deadline.
+        OS DNS resolution cannot be interrupted by the socket deadline. Persist
+        store_epoch + ':' + str(sequence) to resume; a positive number alone
+        cannot safely identify history across a restore. Never downgrades.
         """
-        run_id, cursor = _run_id(run_id), _cursor(after)
+        run_id = _run_id(run_id)
+        epoch, cursor = _cursor(after)
         deadline = time.monotonic() + _seconds(timeout)
         reconnects, last_state = 0, None
         while True:
             exchange = None
             try:
-                exchange = self._open("GET", "/v1/runs/" + run_id + "/events?after=" + str(cursor), deadline=deadline, stream=True,
-                                      extra_headers={"AgentOS-Events-Version": "2"})
+                after_value = str(cursor) if epoch is None else epoch + ":" + str(cursor)
+                exchange = self._open("GET", "/v1/runs/" + run_id + "/events?after=" + after_value, deadline=deadline, stream=True,
+                                      extra_headers={"AgentOS-Events-Version": "3"})
                 self._status(exchange, (200, 204))
+                if exchange.response.getheader("AgentOS-Events-Version") != "3":
+                    raise AgentOSProtocolError("event_version_not_negotiated")
+                # Bind even an empty/rotated stream to its validated header.
+                # Reconnecting after zero events must still detect a restore.
+                epoch = _response_epoch(exchange.response, epoch)
                 if exchange.response.status == 204:
-                    record = self._get_run(run_id, deadline)
+                    record = self._get_run(run_id, deadline, expected_epoch=epoch)
                     if record["state"] not in TERMINAL_STATES or ("events" in record and len(record["events"]) != cursor):
                         raise AgentOSProtocolError("invalid_terminal_catchup")
                     exchange.check()
-                    return
+                    return epoch
                 if exchange.response.getheader("Content-Type", "").split(";")[0].strip().lower() != "text/event-stream":
                     raise AgentOSProtocolError("expected_event_stream")
                 for frame in self._frames(exchange):
@@ -400,19 +425,20 @@ class AgentOSClient:
                     if value.get("run_id") != run_id:
                         raise AgentOSProtocolError("event_run_mismatch")
                     if frame["event"] == "end":
-                        if (set(value) != {"run_id", "state", "last_event_id"} or "id" in frame
+                        if (set(value) != {"run_id", "state", "last_event_id", "store_epoch"} or "id" in frame
                                 or not isinstance(value.get("state"), str) or value["state"] not in TERMINAL_STATES
-                                or type(value.get("last_event_id")) is not int
-                                or value["last_event_id"] != cursor
+                                or value["store_epoch"] != epoch
+                                or value.get("last_event_id") != epoch + ":" + str(cursor)
                                 or (last_state is not None and value["state"] != last_state)):
                             raise AgentOSProtocolError("invalid_terminal_event")
                         exchange.check()
-                        return
-                    if (frame["event"] != "run" or not re.fullmatch(r"[1-9][0-9]{0,18}", frame.get("id", ""))
-                            or not {"sequence", "run_id", "at", "state"} <= set(value)
-                            or not set(value) <= {"sequence", "run_id", "at", "state", "reason", "reason_code"}
+                        return epoch
+                    if (frame["event"] != "run"
+                            or not {"sequence", "run_id", "at", "state", "store_epoch"} <= set(value)
+                            or not set(value) <= {"sequence", "run_id", "at", "state", "store_epoch", "reason", "reason_code"}
                             or type(value.get("sequence")) is not int or value["sequence"] != cursor + 1
-                            or int(frame["id"]) != value["sequence"] or value["sequence"] > MAX_CURSOR
+                            or frame.get("id") != epoch + ":" + str(value["sequence"]) or value["sequence"] > MAX_CURSOR
+                            or value["store_epoch"] != epoch
                             or not isinstance(value.get("state"), str) or value["state"] not in STATES
                             or not isinstance(value.get("at"), str)
                             or ("reason" in value and not isinstance(value["reason"], str))):
@@ -446,9 +472,15 @@ class AgentOSClient:
         """Wait through SSE, then return an authenticated terminal run record."""
         run_id = _run_id(run_id)
         deadline = time.monotonic() + _seconds(timeout)
-        for _event in self.iter_events(run_id, after=after, timeout=max(0.000001, deadline - time.monotonic())):
-            pass
-        record = self._get_run(run_id, deadline)
+        events = self.iter_events(run_id, after=after, timeout=max(0.000001, deadline - time.monotonic()))
+        try:
+            while True:
+                next(events)
+        except StopIteration as completed:
+            epoch = completed.value
+        finally:
+            events.close()
+        record = self._get_run(run_id, deadline, expected_epoch=epoch)
         if record["state"] not in TERMINAL_STATES:
             raise AgentOSProtocolError("stream_ended_before_terminal_run")
         return record

@@ -63,10 +63,15 @@ func TestStoreCommandDrainedBackupRestorePreservesIdentity(t *testing.T) {
 	if result.Operation != "backup" || result.Runs != 1 || result.ActiveRuns != 0 || len(result.SHA256) != 64 {
 		t.Fatal("invalid maintenance result")
 	}
+	sourceHash, sourceEpoch := result.SHA256, result.StoreEpoch
 	restored := filepath.Join(maintenanceDirectory(t), "restored.db")
 	output.Reset()
 	if err := runStore([]string{"restore", "--backup", backup, "--db", restored, "--sha256", result.SHA256}, &output); err != nil {
 		t.Fatal(err)
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil || result.Operation != "restore" ||
+		result.SourceSHA256 != sourceHash || result.SHA256 == sourceHash || result.StoreEpoch == sourceEpoch || len(result.StoreEpoch) != 32 {
+		t.Fatal("restore result must distinguish source hash, target hash and new epoch", err)
 	}
 	db, err := store.Open(restored)
 	if err != nil {

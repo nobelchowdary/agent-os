@@ -444,7 +444,7 @@ func (b *Backend) Observe(ctx context.Context, id string) (backend.Observation, 
 	if err != nil {
 		return backend.Observation{}, err
 	}
-	failed, failureTarget, deadline := false, false, false
+	complete, failed, failureTarget, deadline := false, false, false, false
 	for _, condition := range job.Status.Conditions {
 		if condition.Status != corev1.ConditionTrue {
 			continue
@@ -457,8 +457,16 @@ func (b *Backend) Observe(ctx context.Context, id string) (backend.Observation, 
 			failureTarget = true
 			deadline = deadline || condition.Reason == "DeadlineExceeded"
 		case batchv1.JobComplete:
-			return backend.Observation{State: model.Succeeded, Reason: "Kubernetes Job completed", ReasonCode: model.ReasonCompleted}, nil
+			complete = true
 		}
+	}
+	// Decide after inspecting the whole set: contradictory controller facts
+	// cannot authorize either success or release of the active reservation.
+	if complete && (failed || failureTarget) {
+		return backend.Observation{}, errors.New("execution has contradictory Job outcome conditions")
+	}
+	if complete {
+		return backend.Observation{State: model.Succeeded, Reason: "Kubernetes Job completed", ReasonCode: model.ReasonCompleted}, nil
 	}
 	if deadline {
 		state := model.Cancelling
@@ -502,8 +510,16 @@ func (b *Backend) Observe(ctx context.Context, id string) (backend.Observation, 
 		// after the controller's existing startup wait has already expired.
 		return backend.Observation{State: model.Starting, Reason: "execution awaits image pull", ReasonCode: model.ReasonImagePullFailed}, nil
 	}
-	if job.Status.Active > 0 {
-		return backend.Observation{State: model.Running}, nil
+	for _, pod := range pods {
+		for _, container := range pod.Status.ContainerStatuses {
+			if container.Name == "agent" && (container.State.Running != nil || container.State.Terminated != nil) {
+				// Job.Active also counts Pending Pods. Only current execution
+				// evidence establishes a start. A zero-exit process awaiting the
+				// Job terminal condition has started too; do not time it out as
+				// an unstarted workload.
+				return backend.Observation{State: model.Running}, nil
+			}
+		}
 	}
 	return backend.Observation{State: model.Starting}, nil
 }
@@ -516,31 +532,41 @@ func podFailureCode(pods []corev1.Pod) (model.ReasonCode, bool) {
 	imagePullWaiting := false
 	for _, pod := range pods {
 		var code model.ReasonCode
-		if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" {
-			code = model.ReasonEvicted
-		} else {
-			for _, container := range pod.Status.ContainerStatuses {
-				if container.Name != "agent" {
-					continue
-				}
-				if terminated := container.State.Terminated; terminated != nil && terminated.ExitCode != 0 {
-					code = model.ReasonTaskError
-					if terminated.Reason == "OOMKilled" {
-						code = model.ReasonOOMKilled
-					}
-				}
-				if waiting := container.State.Waiting; waiting != nil {
-					switch waiting.Reason {
-					case "InvalidImageName":
-						code = model.ReasonImagePullFailed
-					case "ErrImagePull", "ImagePullBackOff":
-						imagePullWaiting = true
-					}
+		for _, container := range pod.Status.ContainerStatuses {
+			if container.Name != "agent" {
+				continue
+			}
+			if terminated := container.State.Terminated; terminated != nil && terminated.ExitCode != 0 {
+				code = model.ReasonTaskError
+				if terminated.Reason == "OOMKilled" {
+					code = model.ReasonOOMKilled
 				}
 			}
-			if code == "" && pod.Status.Phase == corev1.PodFailed {
+			if waiting := container.State.Waiting; waiting != nil {
+				switch waiting.Reason {
+				case "InvalidImageName":
+					code = model.ReasonImagePullFailed
+				case "ErrImagePull", "ImagePullBackOff":
+					imagePullWaiting = true
+				}
+			}
+		}
+		if platformDisrupted(pod) {
+			if code == model.ReasonOOMKilled || code == model.ReasonImagePullFailed {
+				// Two specific competing facts do not establish their ordering.
 				code = model.ReasonUnknown
+			} else {
+				// A generic nonzero exit after platform termination is not a
+				// task-error attribution. This classification never enables retry.
+				code = model.ReasonInfraFailure
 			}
+		} else if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" && code != model.ReasonOOMKilled {
+			// Both platform pressure and own-limit eviction use Evicted.
+			// Missing DisruptionTarget is not proof of an own-limit violation;
+			// v1.37 exposes that distinction here only in free-form messages.
+			code = model.ReasonUnknown
+		} else if code == "" && pod.Status.Phase == corev1.PodFailed {
+			code = model.ReasonUnknown
 		}
 		if code != "" {
 			if result != "" && result != code {
@@ -551,6 +577,23 @@ func podFailureCode(pods []corev1.Pod) (model.ReasonCode, bool) {
 		}
 	}
 	return result, imagePullWaiting
+}
+
+func platformDisrupted(pod corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodFailed && pod.DeletionTimestamp == nil {
+		return false // A disruption marker can be withdrawn without a deletion.
+	}
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type != corev1.DisruptionTarget || condition.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch condition.Reason {
+		case corev1.PodReasonTerminationByKubelet, corev1.PodReasonPreemptionByScheduler,
+			"DeletionByTaintManager", "EvictionByEvictionAPI", "DeletionByPodGC":
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Backend) deleteJob(ctx context.Context, job *batchv1.Job) error {

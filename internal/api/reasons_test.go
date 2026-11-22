@@ -43,7 +43,7 @@ func TestReasonCodesAreDocumentedAndStreamed(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"reason_code":"task_error"`) {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	for _, version := range []string{"", "0", "3", "1,2"} {
+	for _, version := range []string{"", "0", "4", "1,2"} {
 		r := httptest.NewRequest("GET", path, nil)
 		r.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
 		r.Header["Agentos-Events-Version"] = []string{version}

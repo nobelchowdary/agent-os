@@ -215,6 +215,20 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 		if err != nil {
 			return err
 		}
+		if time.Since(r.CreatedAt) > 5*time.Minute && ob.State == model.Starting {
+			if !validObservationCode(ob.State, ob.ReasonCode) {
+				return errors.New("invalid backend observation reason code")
+			}
+			code := model.ReasonInfraFailure
+			if ob.ReasonCode == model.ReasonImagePullFailed {
+				code = model.ReasonImagePullFailed
+			}
+			// Running records mean dispatched, not necessarily process-started.
+			// Apply the existing admission-age bound only to a positive Starting
+			// observation; an old actually-running/terminal task remains valid.
+			_, err := c.Store.TransitionWithCode(r.ID, []model.State{model.Running}, model.Cancelling, "startup wait exceeded", code)
+			return err
+		}
 		return c.observe(r, ob)
 	case model.Cancelling:
 		if !validObservationCode(model.Cancelling, r.ReasonCode) {

@@ -209,21 +209,26 @@ func (s *Server) readRequest(w http.ResponseWriter, r *http.Request) (model.Crea
 }
 
 func (s *Server) record(w http.ResponseWriter, r *http.Request, tenant string) (model.Record, bool) {
+	v, _, ok := s.recordSnapshot(w, r, tenant)
+	return v, ok
+}
+
+func (s *Server) recordSnapshot(w http.ResponseWriter, r *http.Request, tenant string) (model.Record, string, bool) {
 	id := r.PathValue("id")
 	if !runID.MatchString(id) {
 		problem(w, 404, "run_not_found", "run not found")
-		return model.Record{}, false
+		return model.Record{}, "", false
 	}
-	v, err := s.Store.Get(tenant, id)
+	v, epoch, err := s.Store.GetWithEpoch(tenant, id)
 	if errors.Is(err, store.ErrNotFound) {
 		problem(w, 404, "run_not_found", "run not found")
-		return v, false
+		return v, "", false
 	}
 	if err != nil {
 		problem(w, 503, "storage_unavailable", "storage unavailable")
-		return v, false
+		return v, "", false
 	}
-	return v, true
+	return v, epoch, true
 }
 
 func (s *Server) newRecord(w http.ResponseWriter, r *http.Request, tenant string) (model.Record, bool) {
@@ -304,7 +309,8 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request, tenant string) {
 }
 
 func (s *Server) get(w http.ResponseWriter, r *http.Request, tenant string) {
-	if v, ok := s.record(w, r, tenant); ok {
+	if v, epoch, ok := s.recordSnapshot(w, r, tenant); ok {
+		w.Header().Set("AgentOS-Store-Epoch", epoch)
 		write(w, 200, v)
 	}
 }
@@ -324,6 +330,10 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, tenant string) {
 		limit = n
 	}
 	v, next, err := s.Store.ListPage(tenant, limit, query["before"])
+	if errors.Is(err, store.ErrEpoch) {
+		problem(w, 409, "store_epoch_mismatch", "store restored; restart pagination and reconcile retained results")
+		return
+	}
 	if errors.Is(err, store.ErrCursor) {
 		problem(w, 400, "invalid_cursor", "invalid pagination cursor")
 		return

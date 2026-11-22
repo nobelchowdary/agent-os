@@ -2,7 +2,9 @@ package store
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -15,12 +17,14 @@ var (
 	ErrActive    = errors.New("offline copy requires a drained store")
 	ErrChecksum  = errors.New("backup checksum is invalid or mismatched")
 	ErrExists    = errors.New("destination already exists")
+	ErrEpoch     = errors.New("cursor belongs to another store epoch")
 
 	metadataBucket = []byte("metadata")
 	schemaKey      = []byte("schema_version")
+	epochKey       = []byte("store_epoch")
 )
 
-const currentSchemaVersion uint64 = 1
+const currentSchemaVersion uint64 = 2
 
 var dataBuckets = [][]byte{recordsBucket, tenantIndexBucket, activeBucket, tenantActiveBucket, idempotencyBucket}
 
@@ -57,8 +61,12 @@ func schemaVersion(tx *bolt.Tx) (uint64, error) {
 	if version > currentSchemaVersion {
 		return 0, fmt.Errorf("%w: newer version", ErrSchema)
 	}
+	if version == currentSchemaVersion && !validEpoch(string(meta.Get(epochKey))) {
+		return 0, fmt.Errorf("%w: malformed store epoch", ErrSchema)
+	}
 	if err := meta.ForEach(func(key, value []byte) error {
-		if !bytes.Equal(key, schemaKey) || value == nil {
+		known := bytes.Equal(key, schemaKey) || version == currentSchemaVersion && bytes.Equal(key, epochKey)
+		if !known || value == nil {
 			return fmt.Errorf("%w: unknown metadata", ErrSchema)
 		}
 		return nil
@@ -96,6 +104,10 @@ func initializeSchema(db *bolt.DB, fresh bool) error {
 	if !empty && version == currentSchemaVersion {
 		return nil
 	}
+	epoch, err := randomEpoch("")
+	if err != nil {
+		return err
+	}
 	// One transaction initializes a fresh database or adds version metadata to
 	// an intact legacy store. No run/spec/event/index value is rewritten.
 	return db.Update(func(tx *bolt.Tx) error {
@@ -114,8 +126,59 @@ func initializeSchema(db *bolt.DB, fresh bool) error {
 		}
 		value := make([]byte, 8)
 		binary.BigEndian.PutUint64(value, currentSchemaVersion)
-		return meta.Put(schemaKey, value)
+		if err := meta.Put(schemaKey, value); err != nil {
+			return err
+		}
+		return meta.Put(epochKey, []byte(epoch))
 	})
+}
+
+func validEpoch(epoch string) bool {
+	if len(epoch) != 32 {
+		return false
+	}
+	for _, ch := range epoch {
+		if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func randomEpoch(previous string) (string, error) {
+	for {
+		var value [16]byte
+		if _, err := rand.Read(value[:]); err != nil {
+			return "", fmt.Errorf("create store epoch: %w", err)
+		}
+		epoch := hex.EncodeToString(value[:])
+		if epoch != previous {
+			return epoch, nil
+		}
+	}
+}
+
+func readEpoch(tx *bolt.Tx) (string, error) {
+	version, err := schemaVersion(tx)
+	if err != nil {
+		return "", err
+	}
+	if version != currentSchemaVersion {
+		return "", ErrSchema
+	}
+	return string(tx.Bucket(metadataBucket).Get(epochKey)), nil
+}
+
+// Epoch identifies this durable store history. It remains stable on ordinary
+// restart and changes on restore before the restored database is published.
+func (s *Store) Epoch() (string, error) {
+	var epoch string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		var err error
+		epoch, err = readEpoch(tx)
+		return err
+	})
+	return epoch, err
 }
 
 func (s *Store) SchemaVersion() (uint64, error) {

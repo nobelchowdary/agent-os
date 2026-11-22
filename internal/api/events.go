@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nobelchowdary/agent-os/internal/controller"
 	"github.com/nobelchowdary/agent-os/internal/model"
+	"github.com/nobelchowdary/agent-os/internal/store"
 )
 
 const (
@@ -41,7 +43,7 @@ func strictQuery(r *http.Request, allowed ...string) (map[string]string, error) 
 	return result, nil
 }
 
-func eventCursor(r *http.Request, count int) (int, error) {
+func eventCursor(r *http.Request, count int, version, epoch string) (int, error) {
 	query, err := strictQuery(r, "after")
 	if err != nil {
 		return 0, err
@@ -56,6 +58,28 @@ func eventCursor(r *http.Request, count int) (int, error) {
 	}
 	if !present {
 		return 0, nil
+	}
+	if version == "3" && raw != "0" {
+		parts := strings.Split(raw, ":")
+		if len(parts) != 2 || len(parts[0]) != 32 || len(parts[1]) == 0 || len(parts[1]) > 19 {
+			return 0, errors.New("invalid cursor")
+		}
+		for _, c := range parts[0] {
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+				return 0, errors.New("invalid cursor")
+			}
+		}
+		// Validate syntax before reporting a well-formed stale epoch. Never
+		// silently reset: that could replay an externally visible action.
+		for _, c := range parts[1] {
+			if c < '0' || c > '9' {
+				return 0, errors.New("invalid cursor")
+			}
+		}
+		if parts[0] != epoch {
+			return 0, store.ErrEpoch
+		}
+		raw = parts[1]
 	}
 	if raw == "" || len(raw) > 20 {
 		return 0, errors.New("invalid cursor")
@@ -101,7 +125,7 @@ func (s *Server) releaseStream(tenant string) {
 // so the next read cannot silently miss it. Slow consumers never hold a DB tx.
 func (s *Server) events(w http.ResponseWriter, r *http.Request, tenant string) {
 	changed := s.Store.Changed()
-	record, ok := s.record(w, r, tenant)
+	record, epoch, ok := s.recordSnapshot(w, r, tenant)
 	if !ok {
 		return
 	}
@@ -110,16 +134,21 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, tenant string) {
 	if len(versions) > 0 {
 		version = versions[0]
 	}
-	if len(versions) > 1 || (version != "1" && version != "2") {
+	if len(versions) > 1 || (version != "1" && version != "2" && version != "3") {
 		problem(w, 400, "invalid_event_version", "unsupported event stream version")
 		return
 	}
 	w.Header().Set("AgentOS-Events-Version", version)
-	cursor, err := eventCursor(r, len(record.Events))
+	cursor, err := eventCursor(r, len(record.Events), version, epoch)
+	if errors.Is(err, store.ErrEpoch) {
+		problem(w, 409, "store_epoch_mismatch", "store restored; reconcile run history before resuming")
+		return
+	}
 	if err != nil {
 		problem(w, 400, "invalid_cursor", "invalid event cursor")
 		return
 	}
+	w.Header().Set("AgentOS-Store-Epoch", epoch)
 	if record.State.Terminal() && cursor == len(record.Events) {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -178,15 +207,21 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, tenant string) {
 				payload.ReasonCode = ""
 			}
 			event := struct {
-				Sequence int    `json:"sequence"`
-				RunID    string `json:"run_id"`
+				Sequence   int    `json:"sequence"`
+				RunID      string `json:"run_id"`
+				StoreEpoch string `json:"store_epoch,omitempty"`
 				model.Event
-			}{cursor + 1, record.ID, payload}
+			}{Sequence: cursor + 1, RunID: record.ID, Event: payload}
+			id := strconv.Itoa(cursor + 1)
+			if version == "3" {
+				event.StoreEpoch = epoch
+				id = epoch + ":" + id
+			}
 			encoded, err := json.Marshal(event)
 			if err != nil {
 				return
 			}
-			if err := frame([]byte(fmt.Sprintf("id: %d\nevent: run\ndata: %s\n\n", cursor+1, encoded))); err != nil {
+			if err := frame([]byte(fmt.Sprintf("id: %s\nevent: run\ndata: %s\n\n", id, encoded))); err != nil {
 				return
 			}
 			cursor++
@@ -196,7 +231,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, tenant string) {
 			}
 		}
 		if record.State.Terminal() {
-			encoded, _ := json.Marshal(map[string]any{"run_id": record.ID, "state": record.State, "last_event_id": cursor})
+			end := map[string]any{"run_id": record.ID, "state": record.State, "last_event_id": cursor}
+			if version == "3" {
+				end["last_event_id"] = epoch + ":" + strconv.Itoa(cursor)
+				end["store_epoch"] = epoch
+			}
+			encoded, _ := json.Marshal(end)
 			_ = frame([]byte(fmt.Sprintf("event: end\ndata: %s\n\n", encoded)))
 			return
 		}
@@ -211,8 +251,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, tenant string) {
 			}
 		case <-changed:
 			changed = s.Store.Changed()
-			record, err = s.Store.Get(tenant, record.ID)
-			if err != nil {
+			var observedEpoch string
+			record, observedEpoch, err = s.Store.GetWithEpoch(tenant, record.ID)
+			if err != nil || observedEpoch != epoch {
 				return
 			} // HTTP headers already sent; reconnect to observe failure.
 		}

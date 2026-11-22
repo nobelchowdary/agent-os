@@ -41,9 +41,10 @@ const (
 	maxReasonBytes   = 1024
 	defaultListLimit = 100
 	maxListLimit     = 1000
-	// Version, tenant digest, fixed-width time, and the bounded run ID.
-	cursorVersion    = 1
-	cursorHeaderSize = 1 + sha256.Size
+	// Version, store epoch, tenant digest, fixed-width time and bounded run ID.
+	cursorVersion    = 2
+	cursorEpochSize  = 16
+	cursorHeaderSize = 1 + cursorEpochSize + sha256.Size
 	maxRawCursorSize = cursorHeaderSize + 12 + maxIdentityBytes
 	maxCursorBytes   = (maxRawCursorSize*8 + 5) / 6
 )
@@ -229,7 +230,15 @@ func (s *Store) Admit(record model.Record, idempotencyKey string, maxTenantActiv
 }
 
 func (s *Store) Get(tenant, id string) (model.Record, error) {
+	record, _, err := s.GetWithEpoch(tenant, id)
+	return record, err
+}
+
+// GetWithEpoch reads the tenant-owned record and store epoch from one database
+// snapshot, so an event-stream cursor can name the exact durable history read.
+func (s *Store) GetWithEpoch(tenant, id string) (model.Record, string, error) {
 	var result model.Record
+	var epoch string
 	err := s.db.View(func(tx *bolt.Tx) error {
 		record, err := readRecord(tx.Bucket(recordsBucket), id)
 		if err != nil {
@@ -238,10 +247,17 @@ func (s *Store) Get(tenant, id string) (model.Record, error) {
 		if record.TenantID != tenant {
 			return ErrNotFound
 		}
+		epoch, err = readEpoch(tx)
+		if err != nil {
+			return err
+		}
 		result = record
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return model.Record{}, "", err
+	}
+	return result, epoch, nil
 }
 
 // List returns at most limit runs in descending creation order. Nonpositive
@@ -258,10 +274,6 @@ func (s *Store) List(tenant string, limit int) ([]model.Record, error) {
 // keyset seek rather than scanning earlier pages. Inserts newer than the cursor
 // do not shift later pages; pagination is not a cross-request snapshot.
 func (s *Store) ListPage(tenant string, limit int, before string) ([]model.Record, string, error) {
-	boundary, err := decodeCursor(tenant, before)
-	if err != nil {
-		return nil, "", err
-	}
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
@@ -270,7 +282,15 @@ func (s *Store) ListPage(tenant string, limit int, before string) ([]model.Recor
 	}
 	result := make([]model.Record, 0)
 	next := ""
-	err = s.db.View(func(tx *bolt.Tx) error {
+	err := s.db.View(func(tx *bolt.Tx) error {
+		epoch, err := readEpoch(tx)
+		if err != nil {
+			return err
+		}
+		boundary, err := decodeCursor(tenant, before, epoch)
+		if err != nil {
+			return err
+		}
 		index := tx.Bucket(tenantIndexBucket).Bucket([]byte(tenant))
 		if index == nil {
 			return nil
@@ -301,7 +321,7 @@ func (s *Store) ListPage(tenant string, limit int, before string) ([]model.Recor
 			key, id = cursor.Prev()
 		}
 		if key != nil {
-			next = encodeCursor(tenant, lastKey)
+			next = encodeCursor(tenant, lastKey, epoch)
 		}
 		return nil
 	})
@@ -434,16 +454,18 @@ func validReasonCode(state model.State, code model.ReasonCode, legacy bool) bool
 	return false
 }
 
-func encodeCursor(tenant string, key []byte) string {
+func encodeCursor(tenant string, key []byte, epoch string) string {
 	raw := make([]byte, cursorHeaderSize+len(key))
 	raw[0] = cursorVersion
+	epochBytes, _ := hex.DecodeString(epoch) // readEpoch already validated it.
+	copy(raw[1:1+cursorEpochSize], epochBytes)
 	scope := sha256.Sum256([]byte(tenant))
-	copy(raw[1:cursorHeaderSize], scope[:])
+	copy(raw[1+cursorEpochSize:cursorHeaderSize], scope[:])
 	copy(raw[cursorHeaderSize:], key)
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
-func decodeCursor(tenant, before string) ([]byte, error) {
+func decodeCursor(tenant, before, epoch string) ([]byte, error) {
 	if before == "" {
 		return nil, nil
 	}
@@ -460,12 +482,15 @@ func decodeCursor(tenant, before string) ([]byte, error) {
 		return nil, ErrCursor
 	}
 	scope := sha256.Sum256([]byte(tenant))
-	if !bytes.Equal(raw[1:cursorHeaderSize], scope[:]) {
+	if !bytes.Equal(raw[1+cursorEpochSize:cursorHeaderSize], scope[:]) {
 		return nil, ErrCursor
 	}
 	key := raw[cursorHeaderSize:]
 	if binary.BigEndian.Uint32(key[8:12]) >= 1_000_000_000 {
 		return nil, ErrCursor
+	}
+	if hex.EncodeToString(raw[1:1+cursorEpochSize]) != epoch {
+		return nil, errors.Join(ErrCursor, ErrEpoch)
 	}
 	return key, nil
 }
