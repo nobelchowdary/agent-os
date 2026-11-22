@@ -350,7 +350,7 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request, tenant string) {
 		write(w, 200, v)
 		return
 	}
-	v, err := s.Store.Transition(v.ID, []model.State{v.State}, model.Cancelling, "cancel requested")
+	v, err := s.Store.TransitionWithCode(v.ID, []model.State{v.State}, model.Cancelling, "cancel requested", model.ReasonCancelled)
 	if errors.Is(err, store.ErrConflict) {
 		problem(w, 409, "run_conflict", "run changed; retry cancellation")
 		return

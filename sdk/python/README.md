@@ -21,7 +21,21 @@ Set `AGENTOS_TOKEN` securely to a tenant token configured by the API operator. A
 
 `get_run(id)` and `cancel(id)` return the API run record. Cancellation is a request; inspect status afterwards. `logs(id)` returns `{run_id, logs, limit_bytes}` and enforces the server's 64 KiB log bound. Templates, images, resources, runtime policy and network permissions are administrator-owned; the client cannot supply a PodSpec or credentials to a workload.
 
-`iter_events(id, after=0, timeout=300)` yields only lifecycle `run` events. Each contains `sequence`, `run_id`, `at`, `state`, and an optional `reason`. It validates contiguous IDs and run identity, skips heartbeat comments, consumes terminal `end` internally, and resumes disconnected GET streams from the last fully validated ID. A terminal HTTP 204 is checked against an authenticated terminal record. No cursor is shared between runs or clients. Save an event's sequence only together with its run ID and tenant identity; the server controls authorization.
+Run records and lifecycle events may include a machine-readable `reason_code`. Legacy responses that omit it remain accepted; the client preserves fields and never derives a code from the untrusted human-readable `reason`. When present, the code must be a nonempty known string consistent with its state:
+
+| State | Accepted `reason_code` |
+| --- | --- |
+| `succeeded` | `completed` |
+| `cancelled` | `cancelled` |
+| `failed` | `task_error`, `deadline_exceeded`, `oom_killed`, `evicted`, `image_pull_failed`, `policy_denied`, `budget_exceeded`, `infra_failure`, `unknown` |
+| `cancelling` | `cancelled` or one of the failure codes above |
+| Other nonterminal states | Field must be omitted |
+
+`policy_denied` and `budget_exceeded` are reserved codes; accepting them does not mean a policy engine or model-spend budget producer is implemented. The existing state names are unchanged. A code on `cancelling` describes the cancellation intent or failure context and does not prove the workload has stopped.
+
+The client requests `AgentOS-Events-Version: 2` so a new server includes reason codes; older servers may ignore it and omit them. New servers preserve format 1 by default for older strict clients. Sequence/cursor/end semantics are identical in both formats.
+
+`iter_events(id, after=0, timeout=300)` yields only lifecycle `run` events. Each contains `sequence`, `run_id`, `at`, `state`, and optional `reason`/`reason_code`. It validates contiguous IDs, run identity and any reason code before advancing its cursor, skips heartbeat comments, consumes terminal `end` internally, and resumes disconnected GET streams from the last fully validated ID. An invalid or inconsistent reason code raises `AgentOSProtocolError` without yielding the event or automatically retrying it. A terminal HTTP 204 is checked against an authenticated terminal record. No cursor is shared between runs or clients. Save an event's sequence only together with its run ID and tenant identity; the server controls authorization.
 
 ```python
 from contextlib import closing

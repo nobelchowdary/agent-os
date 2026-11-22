@@ -1,6 +1,51 @@
 package model
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestReasonCodeVocabularyAndDefaults(t *testing.T) {
+	codes := []ReasonCode{ReasonCompleted, ReasonTaskError, ReasonDeadlineExceeded, ReasonCancelled,
+		ReasonOOMKilled, ReasonEvicted, ReasonImagePullFailed, ReasonPolicyDenied,
+		ReasonBudgetExceeded, ReasonInfraFailure, ReasonUnknown}
+	for _, code := range codes {
+		if !code.Valid() {
+			t.Errorf("declared code %q is invalid", code)
+		}
+	}
+	for _, code := range []ReasonCode{"", "OOMKilled", "custom", " task_error", "TASK_ERROR"} {
+		if code.Valid() {
+			t.Errorf("accepted undeclared code %q", code)
+		}
+	}
+	for _, state := range []State{Queued, Starting, Activating, Running, Cancelling, Succeeded, Failed, Cancelled, "unknown"} {
+		want := map[State]ReasonCode{Succeeded: ReasonCompleted, Failed: ReasonUnknown, Cancelled: ReasonCancelled}[state]
+		if got := DefaultReasonCode(state); got != want {
+			t.Errorf("default for %s = %q, want %q", state, got, want)
+		}
+	}
+}
+
+func TestReasonCodesAreOptionalForLegacyRecordsAndEvents(t *testing.T) {
+	var legacy Record
+	if err := json.Unmarshal([]byte(`{"state":"failed","events":[{"state":"failed","reason":"legacy prose"}]}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.ReasonCode != "" || legacy.Events[0].ReasonCode != "" {
+		t.Fatal("reading legacy JSON invented a historical cause")
+	}
+	encoded, err := json.Marshal(legacy)
+	if err != nil || strings.Contains(string(encoded), "reason_code") {
+		t.Fatalf("legacy omissions did not remain optional: %s, %v", encoded, err)
+	}
+	legacy.ReasonCode, legacy.Events[0].ReasonCode = ReasonTaskError, ReasonTaskError
+	encoded, err = json.Marshal(legacy)
+	if err != nil || strings.Count(string(encoded), `"reason_code":"task_error"`) != 2 {
+		t.Fatalf("structured record/event causes missing: %s, %v", encoded, err)
+	}
+}
 
 func TestCanTransitionAllStatePairs(t *testing.T) {
 	allowed := map[State][]State{

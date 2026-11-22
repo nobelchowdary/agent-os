@@ -13,8 +13,9 @@ var ErrNotFound = errors.New("execution not found")
 var ErrPending = errors.New("execution operation is pending")
 
 type Observation struct {
-	State  model.State
-	Reason string
+	State      model.State
+	Reason     string
+	ReasonCode model.ReasonCode
 }
 
 // Backend operations must be idempotent for a deterministic run ID.

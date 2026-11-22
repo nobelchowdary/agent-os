@@ -105,6 +105,16 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, tenant string) {
 	if !ok {
 		return
 	}
+	versions := r.Header.Values("AgentOS-Events-Version")
+	version := "1"
+	if len(versions) > 0 {
+		version = versions[0]
+	}
+	if len(versions) > 1 || (version != "1" && version != "2") {
+		problem(w, 400, "invalid_event_version", "unsupported event stream version")
+		return
+	}
+	w.Header().Set("AgentOS-Events-Version", version)
 	cursor, err := eventCursor(r, len(record.Events))
 	if err != nil {
 		problem(w, 400, "invalid_cursor", "invalid event cursor")
@@ -163,11 +173,15 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, tenant string) {
 				return
 			default:
 			}
+			payload := record.Events[cursor]
+			if version == "1" {
+				payload.ReasonCode = ""
+			}
 			event := struct {
 				Sequence int    `json:"sequence"`
 				RunID    string `json:"run_id"`
 				model.Event
-			}{cursor + 1, record.ID, record.Events[cursor]}
+			}{cursor + 1, record.ID, payload}
 			encoded, err := json.Marshal(event)
 			if err != nil {
 				return

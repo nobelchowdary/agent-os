@@ -151,6 +151,96 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(request["headers"]["Authorization"], "Bearer " + TOKEN)
             self.assertEqual(request["headers"]["Idempotency-Key"], "persisted-key")
             self.assertEqual(json.loads(request["body"]), {"template": "python", "command": ["python", "-c", "print(1)"], "timeout_seconds": 30})
+            streams = [r for r in server.requests if "/events?" in r["path"]]
+            self.assertEqual({k.lower(): v for k, v in streams[0]["headers"].items()}["agentos-events-version"], "2")
+
+    def test_coded_json_records_and_legacy_omissions_remain_compatible(self):
+        cases = [(state, None) for state in sorted(sdk.STATES)]
+        cases += [("succeeded", "completed"), ("cancelled", "cancelled"), ("cancelling", "cancelled")]
+        cases += [(state, code) for state in ("failed", "cancelling") for code in sorted(sdk.FAILURE_REASON_CODES)]
+        for state, code in cases:
+            value = record(state, count=0)
+            value["reason"] = "Diagnostic text says budget_exceeded; this is not a classifier."
+            if code is not None:
+                value["reason_code"] = code
+            with self.subTest(state=state, reason_code=code), serving(lambda h: h.json(value)) as server:
+                self.assertEqual(self.client(server).get_run(RUN), value)
+
+        def router(h):
+            state, code = ("cancelling", "cancelled") if h.path.endswith("/cancel") else ("succeeded", "completed")
+            h.json(dict(record(state), reason_code=code), 200)
+
+        with serving(router) as server:
+            client = self.client(server)
+            self.assertEqual(client.create_run("python", idempotency_key="existing-coded-run")["reason_code"], "completed")
+            self.assertEqual(client.cancel(RUN)["reason_code"], "cancelled")
+
+    def test_invalid_record_reason_codes_fail_sanitized(self):
+        invalid = [("failed", code) for code in ("", None, True, 42, [], {}, "made_up", TOKEN, "completed", "cancelled")]
+        invalid += [("succeeded", "task_error"), ("cancelled", "completed"), ("cancelling", "completed")]
+        invalid += [(state, "unknown") for state in ("queued", "starting", "activating", "running")]
+        for state, code in invalid:
+            value = dict(record(state), reason_code=code)
+            with self.subTest(state=state, code_type=type(code).__name__), serving(lambda h: h.json(value)) as server:
+                with self.assertRaises(sdk.AgentOSProtocolError) as caught:
+                    self.client(server).get_run(RUN)
+                self.assertNotIn(TOKEN, str(caught.exception))
+
+        # The same validator applies to creation and cancellation responses.
+        with serving(lambda h: h.json(dict(record("succeeded"), reason_code="cancelled"))) as server:
+            client = self.client(server)
+            with self.assertRaises(sdk.AgentOSProtocolError):
+                client.create_run("python", idempotency_key="invalid-coded-response")
+            with self.assertRaises(sdk.AgentOSProtocolError):
+                client.cancel(RUN)
+
+    def test_record_history_reason_code_is_validated_and_preserved(self):
+        value = dict(record("succeeded", count=1), reason_code="completed")
+        value["events"][0]["reason_code"] = "task_error"
+        with serving(lambda h: h.json(value)) as server:
+            with self.assertRaises(sdk.AgentOSProtocolError):
+                self.client(server).get_run(RUN)
+            value["events"][0]["reason_code"] = "completed"
+            self.assertEqual(self.client(server).get_run(RUN), value)
+
+    def test_coded_sse_reconnect_preserves_code_reason_and_auth(self):
+        coded = dict(event(2, "failed"), reason_code="infra_failure", reason="untrusted text says completed")
+
+        def router(h):
+            after = parse_qs(urlsplit(h.path).query)["after"][0]
+            h.sse(frame(event(1, "queued")) if after == "0" else frame(coded) + end(2, "failed"))
+
+        with serving(router) as server:
+            values = list(self.client(server).iter_events(RUN, timeout=2))
+            self.assertEqual(values, [event(1, "queued"), coded])
+            self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", "1"])
+            self.assertTrue(all(r["headers"]["Authorization"] == "Bearer " + TOKEN for r in server.requests))
+
+    def test_invalid_reason_code_never_advances_resumable_cursor(self):
+        invalid = [("failed", code) for code in ("made_up", "", None, True, [], {}, "completed", "cancelled", TOKEN)]
+        invalid += [("running", "task_error"), ("cancelling", "completed"), ("succeeded", "unknown")]
+        for state, code in invalid:
+            bad = dict(event(2, state), reason_code=code)
+            fixed = dict(event(2, "failed"), reason_code="infra_failure")
+
+            def router(h):
+                after = parse_qs(urlsplit(h.path).query)["after"][0]
+                h.sse(frame(event(1, "queued")) + frame(bad) if after == "0" else frame(fixed) + end(2, "failed"))
+
+            with self.subTest(state=state, code_type=type(code).__name__), serving(router) as server:
+                client = self.client(server)
+                events = client.iter_events(RUN, timeout=2)
+                last_validated = next(events)["sequence"]
+                with self.assertRaises(sdk.AgentOSProtocolError) as caught:
+                    next(events)
+                self.assertNotIn(TOKEN, str(caught.exception))
+                self.assertEqual(last_validated, 1)
+                self.assertEqual(len(server.requests), 1)  # Malformed data is not retried automatically.
+                # The caller resumes using the last event it actually received;
+                # sequence 2 must still be delivered rather than silently skipped.
+                self.assertEqual(list(client.iter_events(RUN, after=last_validated, timeout=2)), [fixed])
+                self.assertEqual([r["path"].split("after=")[1] for r in server.requests], ["0", "1"])
+                self.assertTrue(all(r["headers"]["Authorization"] == "Bearer " + TOKEN for r in server.requests))
 
     def test_required_idempotency_and_policy_input_validation_precede_network(self):
         with serving(lambda h: h.json(record())) as server:

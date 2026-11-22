@@ -2,11 +2,13 @@
 
 The November 21 proposal is preserved in [source-plan-2026-11-21.txt](source-plan-2026-11-21.txt). Start implementation planning with the [70-requirement gap audit and phase report](GAP_AUDIT_2026-11-21.md), which checks the actual repository instead of relying on earlier status summaries. It includes test references, cluster facts, measurement status, the T1–T16 matrix, deviations and open decisions.
 
+The [November 22 continuation report](PHASE_ZERO_2026-11-22.md) adds structured outcome codes (C2) and stopped, drained metadata check/backup/restore with schema compatibility (C14). Both are local progress against Partial requirements; EKS results and the frozen audit counts do not change.
+
 At audited commit `e2ed1a4`, 41 whole requirements were Partial and 29 Missing. No whole requirement was accepted as Implemented against its full requested acceptance test. These labels include the EKS evidence gate and do not erase narrower implemented features. All EKS outcomes remain Not run. Machine-readable records are in `audit-core.json`, `audit-security.json` and `audit-platform.json`; do not silently update this frozen baseline after code changes.
 
 | Phase | Status | Next acceptance work |
 | --- | --- | --- |
-| 0: core invariants | In progress | Central state-graph enforcement and API contract/error validation now have local tests. C2 reason codes, C14 storage recovery, C11 HA design and other unmet core criteria remain. |
+| 0: core invariants | In progress | State graph, API contract, structured outcome codes and drained metadata recovery have local tests. Full cause/fault campaigns, active disaster recovery, C11 HA design and other unmet core criteria remain. |
 | 1: EKS qualification | Not run | Connect a selected disposable environment; qualify runtime/CNI/node resources and first offline task. |
 | 2: complete connected agent | Gated | Spike existing gateways against N4–N9 only after qualification. No direct provider egress or credentials in task commands. |
 | 3: upstream comparison | Gated | Pin the reference, select metrics/thresholds before collection, include real billing and operator effort; publish all outcomes. |

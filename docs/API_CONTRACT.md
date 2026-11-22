@@ -14,7 +14,7 @@ Application errors preserve the existing human-readable `error` field and add `c
 
 Use `code` and the HTTP status for decisions. Human-readable messages can change. The schema lists the supported code vocabulary. Unknown routes and unsupported methods return structured `route_not_found` / `method_not_allowed`; the latter includes `Allow`. Transient storage, controller, runtime-declaration and log-read failures include `Retry-After: 5`; overload already supplies its own retry header. Errors before application routing, such as malformed HTTP framing or connection timeouts, may be produced by the HTTP server instead.
 
-These codes describe API outcomes, not workload terminal reason codes. The planned C2 taxonomy (`oom_killed`, `deadline_exceeded`, etc.) remains unimplemented. Provider-spend and policy decisions must not be inferred from a generic HTTP error.
+These `code` values describe API outcomes. Run/event `reason_code` is a separate optional [outcome taxonomy](OUTCOME_CODES.md), now implemented for structured runtime facts and cleanup intent. Provider-spend and policy decisions must not be inferred from a generic HTTP error; their outcome names remain reserved without producers.
 
 ## Submission validation
 
@@ -28,4 +28,4 @@ These are deliberate validation tightenings in the experimental API: callers rel
 
 [`model.CanTransition`](../internal/model/run.go) defines the allowed graph. The Store checks the actual persisted source state, expected-state CAS and allowed edge within one transaction before appending an event or changing active reservations. Illegal edges fail without a write or notification. Known-state no-ops remain reads. Forward observation/recovery edges preserve authoritative backend outcomes after downtime; they do not submit or recreate execution.
 
-No state migration is introduced here. `queued` still represents durable admission; rejected admission is an HTTP outcome; task deadlines still produce `failed`. Cancellation keeps its active reservation until observed cleanup. The [live API](LIVE_API.md) describes event replay and the limits of cancellation observations.
+Public state names are unchanged. `queued` still represents durable admission; rejected admission is an HTTP outcome; task deadlines still produce `failed`, now with `reason_code: deadline_exceeded` when observed. Cancellation keeps its active reservation until observed cleanup. The [live API](LIVE_API.md) describes event replay and the limits of cancellation observations. Store versioning and its metadata-only legacy migration are documented in [offline recovery](STORAGE_RECOVERY.md); neither migration nor reads rewrite old event causes.

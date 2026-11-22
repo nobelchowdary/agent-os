@@ -12,6 +12,8 @@ The November 21 iteration adds resumable committed lifecycle events, immediate c
 
 The supplied [robustness proposal and 70-ID audit](robustness/README.md) now govern the next work through explicit phase gates. At baseline `e2ed1a4`, 41 requirements are Partial and 29 Missing against the whole requested acceptance criteria; all EKS tests are Not run. Local phase 0 improvements enforce the persisted state graph (C1) and add an embedded OpenAPI/error/validation contract (C12). [Decision 0004](decisions/0004-robustness-phase-zero.md). Phase 0 remains in progress; later gateway and driver implementation is gated by its unmet prerequisites and EKS qualification.
 
+The [November 22 phase 0 continuation](robustness/PHASE_ZERO_2026-11-22.md) adds structured outcome/cleanup codes (C2) and schema-versioned, drained offline metadata check/backup/restore (C14). It preserves legacy event/specification identity and refuses stale active recovery. Full EKS cause-production, live fault/load, active recovery and HA acceptance remain unmet; the original audit remains historical.
+
 | Stage | Capability | Evidence required before expanding |
 | --- | --- | --- |
 | First alpha | Authenticated tenant API; administrator-owned Python/Node templates; bounded Jobs requiring gVisor; default-deny workload policy prerequisite; admission limits; idempotent submission; persisted run metadata; status/cancel/log access; local Job preview | Automated contract tests, source checks, reproducible build instructions; no claim of live-cluster qualification |

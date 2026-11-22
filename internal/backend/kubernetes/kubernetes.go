@@ -444,27 +444,113 @@ func (b *Backend) Observe(ctx context.Context, id string) (backend.Observation, 
 	if err != nil {
 		return backend.Observation{}, err
 	}
-	if job.DeletionTimestamp != nil {
-		return backend.Observation{State: model.Cancelling, Reason: "execution deletion requested"}, nil
-	}
+	failed, failureTarget, deadline := false, false, false
 	for _, condition := range job.Status.Conditions {
 		if condition.Status != corev1.ConditionTrue {
 			continue
 		}
 		switch condition.Type {
 		case batchv1.JobFailed:
-			return backend.Observation{State: model.Failed, Reason: "Kubernetes Job failed"}, nil
+			failed = true
+			deadline = deadline || condition.Reason == "DeadlineExceeded"
+		case batchv1.JobFailureTarget:
+			failureTarget = true
+			deadline = deadline || condition.Reason == "DeadlineExceeded"
 		case batchv1.JobComplete:
-			return backend.Observation{State: model.Succeeded, Reason: "Kubernetes Job completed"}, nil
+			return backend.Observation{State: model.Succeeded, Reason: "Kubernetes Job completed", ReasonCode: model.ReasonCompleted}, nil
 		}
+	}
+	if deadline {
+		state := model.Cancelling
+		if failed {
+			state = model.Failed
+		}
+		return backend.Observation{State: state, Reason: "Kubernetes execution deadline exceeded", ReasonCode: model.ReasonDeadlineExceeded}, nil
+	}
+	if !failed && job.DeletionTimestamp != nil {
+		return backend.Observation{State: model.Cancelling, Reason: "execution deletion requested", ReasonCode: model.ReasonInfraFailure}, nil
+	}
+	pods, err := b.runPods(ctx, id, job.UID)
+	if err != nil {
+		if failed {
+			// The terminal Job remains authoritative if optional Pod evidence is
+			// unavailable. Do not guess a specific cause or adopt foreign Pods.
+			return backend.Observation{State: model.Failed, Reason: "Kubernetes Job failed", ReasonCode: model.ReasonUnknown}, nil
+		}
+		return backend.Observation{}, err
+	}
+	code, imagePullWaiting := podFailureCode(pods)
+	if failed {
+		if code == "" {
+			code = model.ReasonUnknown
+		}
+		return backend.Observation{State: model.Failed, Reason: "Kubernetes Job failed", ReasonCode: code}, nil
+	}
+	if failureTarget || code != "" {
+		if code == "" {
+			code = model.ReasonUnknown
+		}
+		// Pod status or a failure target is not proof that all workloads have
+		// stopped. Retain capacity until Cancel confirms Job/Pod disappearance.
+		return backend.Observation{State: model.Cancelling, Reason: "Kubernetes execution requires cleanup", ReasonCode: code}, nil
 	}
 	if job.Spec.Suspend != nil && *job.Spec.Suspend {
 		return backend.Observation{State: model.Starting, Reason: "execution awaits activation"}, nil
+	}
+	if imagePullWaiting {
+		// Registry/network failures can recover. This hint is consumed only
+		// after the controller's existing startup wait has already expired.
+		return backend.Observation{State: model.Starting, Reason: "execution awaits image pull", ReasonCode: model.ReasonImagePullFailed}, nil
 	}
 	if job.Status.Active > 0 {
 		return backend.Observation{State: model.Running}, nil
 	}
 	return backend.Observation{State: model.Starting}, nil
+}
+
+// podFailureCode uses structured status from already ownership-checked Pods,
+// never termination messages or logs. Missing or conflicting causes stay
+// unknown. Only the declared agent container's current status is considered.
+func podFailureCode(pods []corev1.Pod) (model.ReasonCode, bool) {
+	var result model.ReasonCode
+	imagePullWaiting := false
+	for _, pod := range pods {
+		var code model.ReasonCode
+		if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" {
+			code = model.ReasonEvicted
+		} else {
+			for _, container := range pod.Status.ContainerStatuses {
+				if container.Name != "agent" {
+					continue
+				}
+				if terminated := container.State.Terminated; terminated != nil && terminated.ExitCode != 0 {
+					code = model.ReasonTaskError
+					if terminated.Reason == "OOMKilled" {
+						code = model.ReasonOOMKilled
+					}
+				}
+				if waiting := container.State.Waiting; waiting != nil {
+					switch waiting.Reason {
+					case "InvalidImageName":
+						code = model.ReasonImagePullFailed
+					case "ErrImagePull", "ImagePullBackOff":
+						imagePullWaiting = true
+					}
+				}
+			}
+			if code == "" && pod.Status.Phase == corev1.PodFailed {
+				code = model.ReasonUnknown
+			}
+		}
+		if code != "" {
+			if result != "" && result != code {
+				result = model.ReasonUnknown
+			} else if result == "" {
+				result = code
+			}
+		}
+	}
+	return result, imagePullWaiting
 }
 
 func (b *Backend) deleteJob(ctx context.Context, job *batchv1.Job) error {

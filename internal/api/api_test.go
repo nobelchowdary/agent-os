@@ -106,7 +106,7 @@ func TestTenantBoundaryAndDurableIdempotency(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	v, err := s.Store.Get("alice", first.ID)
-	if err != nil || v.State != model.Cancelling {
+	if err != nil || v.State != model.Cancelling || v.ReasonCode != model.ReasonCancelled {
 		t.Fatal(v, err)
 	}
 	if w := request(s, "POST", "/v1/runs", a, "task-3", body); w.Code != 429 {
@@ -122,6 +122,7 @@ func TestRejectsPodSpecBypassAndMalformedBodies(t *testing.T) {
 		`{"template":"python","runtime_class":"runc"}`,
 		`{"template":"python","runtime_profile":{"kind":"aws-nitro-isolated","runtime_class":"isolated-sandbox","required_handler":"isolated-sandbox"}}`,
 		`{"template":"python","tenant_id":"bob"}`,
+		`{"template":"python","reason_code":"budget_exceeded"}`,
 		`{"template":"python","resources":{"cpu_milli":64000}}`,
 		`{"template":"python","timeout_seconds":301}`,
 		`{"template":"python"} {}`,

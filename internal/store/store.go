@@ -10,8 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -70,39 +68,15 @@ func Open(path string) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("database path is required")
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("create database directory: %w", err)
-	}
-	info, err := os.Stat(dir)
+	path, err := privatePath(path, true)
 	if err != nil {
-		return nil, fmt.Errorf("stat database directory: %w", err)
+		return nil, err
 	}
-	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return nil, errors.New("database directory must be private (0700)")
-	}
-	if info, err := os.Lstat(path); err == nil {
-		if !info.Mode().IsRegular() {
-			return nil, errors.New("database path must be a regular file")
-		}
-		if err := os.Chmod(path, 0600); err != nil {
-			return nil, fmt.Errorf("secure database file: %w", err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("stat database file: %w", err)
-	}
-	db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: time.Second})
+	db, _, fresh, err := openDatabase(path, false)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{recordsBucket, tenantIndexBucket, activeBucket, tenantActiveBucket, idempotencyBucket} {
-			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
+	if err := initializeSchema(db, fresh); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}
@@ -137,8 +111,8 @@ func (s *Store) publishChanged() {
 // transaction. Every nonterminal run occupies capacity, including cancellations.
 // A matching idempotent retry returns its original record before checking quota.
 func (s *Store) Admit(record model.Record, idempotencyKey string, maxTenantActive, maxGlobalActive int) (model.Record, bool, error) {
-	if record.ID == "" || len(record.ID) > maxIdentityBytes || record.TenantID == "" || len(record.TenantID) > maxIdentityBytes {
-		return model.Record{}, false, errors.New("run and tenant IDs must contain 1 to 1024 bytes")
+	if !validIdentity(record.ID) || !validIdentity(record.TenantID) {
+		return model.Record{}, false, errors.New("run and tenant IDs must contain 1 to 1024 UTF-8 bytes")
 	}
 	if len(idempotencyKey) > maxKeyBytes {
 		return model.Record{}, false, errors.New("idempotency key exceeds 4096 bytes")
@@ -202,6 +176,7 @@ func (s *Store) Admit(record model.Record, idempotencyKey string, maxTenantActiv
 		}
 		record.UpdatedAt = record.CreatedAt
 		record.Reason = boundedReason(record.Reason)
+		record.ReasonCode = ""
 		record.Events = []model.Event{{At: record.CreatedAt, State: model.Queued, Reason: record.Reason}}
 		encoded, err := json.Marshal(record)
 		if err != nil {
@@ -359,6 +334,13 @@ func (s *Store) Active() ([]model.Record, error) {
 // cannot authorize an illegal edge. An allowed same-state transition returns
 // without changing history or notifying subscribers.
 func (s *Store) Transition(id string, allowed []model.State, to model.State, reason string) (model.Record, error) {
+	return s.TransitionWithCode(id, allowed, to, reason, model.DefaultReasonCode(to))
+}
+
+// TransitionWithCode records a stable observed outcome or cleanup intent in the
+// same transaction as the state change. Same-state reads preserve legacy and
+// already-coded outcomes, regardless of the newly proposed reason/code.
+func (s *Store) TransitionWithCode(id string, allowed []model.State, to model.State, reason string, code model.ReasonCode) (model.Record, error) {
 	if !to.Valid() {
 		return model.Record{}, fmt.Errorf("%w: unknown target state", ErrConflict)
 	}
@@ -389,14 +371,18 @@ func (s *Store) Transition(id string, allowed []model.State, to model.State, rea
 			result = record
 			return nil
 		}
+		if !validReasonCode(to, code, false) {
+			return fmt.Errorf("%w: reason code does not match target state", ErrConflict)
+		}
 		now := time.Now().UTC()
 		if now.Before(record.UpdatedAt) {
 			now = record.UpdatedAt
 		}
 		record.State = to
 		record.Reason = boundedReason(reason)
+		record.ReasonCode = code
 		record.UpdatedAt = now
-		record.Events = append(record.Events, model.Event{At: now, State: to, Reason: record.Reason})
+		record.Events = append(record.Events, model.Event{At: now, State: to, Reason: record.Reason, ReasonCode: code})
 		encoded, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -424,6 +410,28 @@ func (s *Store) Transition(id string, allowed []model.State, to model.State, rea
 		s.publishChanged()
 	}
 	return result, err
+}
+
+// Empty codes remain valid in legacy persisted records. New terminal changes
+// must carry a code; only Cancelling can persist nonterminal cleanup intent.
+func validReasonCode(state model.State, code model.ReasonCode, legacy bool) bool {
+	if code == "" {
+		return legacy || !state.Terminal()
+	}
+	if !code.Valid() {
+		return false
+	}
+	switch state {
+	case model.Succeeded:
+		return code == model.ReasonCompleted
+	case model.Cancelled:
+		return code == model.ReasonCancelled
+	case model.Failed:
+		return code != model.ReasonCompleted && code != model.ReasonCancelled
+	case model.Cancelling:
+		return code != model.ReasonCompleted
+	}
+	return false
 }
 
 func encodeCursor(tenant string, key []byte) string {

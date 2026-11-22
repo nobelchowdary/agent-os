@@ -22,6 +22,10 @@ from urllib.parse import urlsplit
 STATES = frozenset({"queued", "starting", "activating", "running", "cancelling",
                     "succeeded", "failed", "cancelled"})
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
+REASON_CODES = frozenset({"completed", "task_error", "deadline_exceeded", "cancelled",
+                          "oom_killed", "evicted", "image_pull_failed", "policy_denied",
+                          "budget_exceeded", "infra_failure", "unknown"})
+FAILURE_REASON_CODES = REASON_CODES - {"completed", "cancelled"}
 MAX_CURSOR = 2**63 - 1
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_EVENT_BYTES = 128 * 1024
@@ -66,6 +70,21 @@ def _cursor(value):
     if type(value) is not int or not 0 <= value <= MAX_CURSOR:
         raise ValueError("after must be an integer event cursor between 0 and 2**63-1")
     return value
+
+
+def _reason_code(value):
+    """Validate the optional machine code, never infer one from diagnostic text."""
+    if "reason_code" not in value:
+        return  # Legacy records/events omit it; omission is not an unknown-code assertion.
+    code, state = value["reason_code"], value.get("state")
+    if not isinstance(code, str) or code not in REASON_CODES:
+        raise AgentOSProtocolError("invalid_reason_code")
+    consistent = ((state == "succeeded" and code == "completed")
+                  or (state == "cancelled" and code == "cancelled")
+                  or (state == "failed" and code in FAILURE_REASON_CODES)
+                  or (state == "cancelling" and (code == "cancelled" or code in FAILURE_REASON_CODES)))
+    if not consistent:
+        raise AgentOSProtocolError("reason_code_state_mismatch")
 
 
 def _json(encoded):
@@ -255,6 +274,10 @@ class AgentOSClient:
             raise AgentOSProtocolError("invalid_or_mismatched_run_record")
         if "events" in value and not isinstance(value["events"], list):
             raise AgentOSProtocolError("invalid_run_events")
+        _reason_code(value)
+        for event in value.get("events", []):
+            if isinstance(event, dict):
+                _reason_code(event)
         return value
 
     def create_run(self, template, command=None, timeout_seconds=None, *, idempotency_key):
@@ -357,7 +380,8 @@ class AgentOSClient:
         while True:
             exchange = None
             try:
-                exchange = self._open("GET", "/v1/runs/" + run_id + "/events?after=" + str(cursor), deadline=deadline, stream=True)
+                exchange = self._open("GET", "/v1/runs/" + run_id + "/events?after=" + str(cursor), deadline=deadline, stream=True,
+                                      extra_headers={"AgentOS-Events-Version": "2"})
                 self._status(exchange, (200, 204))
                 if exchange.response.status == 204:
                     record = self._get_run(run_id, deadline)
@@ -386,13 +410,14 @@ class AgentOSClient:
                         return
                     if (frame["event"] != "run" or not re.fullmatch(r"[1-9][0-9]{0,18}", frame.get("id", ""))
                             or not {"sequence", "run_id", "at", "state"} <= set(value)
-                            or not set(value) <= {"sequence", "run_id", "at", "state", "reason"}
+                            or not set(value) <= {"sequence", "run_id", "at", "state", "reason", "reason_code"}
                             or type(value.get("sequence")) is not int or value["sequence"] != cursor + 1
                             or int(frame["id"]) != value["sequence"] or value["sequence"] > MAX_CURSOR
                             or not isinstance(value.get("state"), str) or value["state"] not in STATES
                             or not isinstance(value.get("at"), str)
                             or ("reason" in value and not isinstance(value["reason"], str))):
                         raise AgentOSProtocolError("invalid_run_event")
+                    _reason_code(value)
                     try:
                         timestamp = datetime.fromisoformat(value["at"].replace("Z", "+00:00"))
                         if timestamp.tzinfo is None:

@@ -31,12 +31,20 @@ func main() {
 }
 
 func run() error {
+	// Filesystem-authorized maintenance needs neither API credentials nor a
+	// Kubernetes connection and must never start the execution controller.
+	if len(os.Args) > 1 && os.Args[1] == "store" {
+		return runStore(os.Args[2:], os.Stdout)
+	}
 	configPath := flag.String("config", "config/example.json", "administrator-owned configuration")
 	dbPath := flag.String("db", "data/runs.db", "durable database in a private directory")
 	listen := flag.String("listen", "127.0.0.1:8080", "HTTP listen address; use a TLS proxy for remote clients")
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path (default in-cluster, then standard kubeconfig)")
 	preview := flag.Bool("preview", false, "render environment plans without cluster access; execution disabled")
 	flag.Parse()
+	if flag.NArg() != 0 {
+		return errors.New("unexpected arguments; use agentos store --help for database maintenance")
+	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err

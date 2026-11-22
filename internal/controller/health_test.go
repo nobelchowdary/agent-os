@@ -19,6 +19,7 @@ type hookedBackend struct {
 	backend.Backend
 	ready   func(context.Context) error
 	observe func(context.Context, string) (backend.Observation, error)
+	cancel  func(context.Context, string) error
 }
 
 func (b *hookedBackend) Ready(ctx context.Context) error {
@@ -33,6 +34,13 @@ func (b *hookedBackend) Observe(ctx context.Context, id string) (backend.Observa
 		return b.observe(ctx, id)
 	}
 	return b.Backend.Observe(ctx, id)
+}
+
+func (b *hookedBackend) Cancel(ctx context.Context, id string) error {
+	if b.cancel != nil {
+		return b.cancel(ctx, id)
+	}
+	return b.Backend.Cancel(ctx, id)
 }
 
 func waitFor(t *testing.T, predicate func() bool) {

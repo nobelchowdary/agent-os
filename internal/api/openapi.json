@@ -548,7 +548,7 @@
     "/v1/runs/{id}/events": {
       "get": {
         "operationId": "events",
-        "description": "SSE lifecycle replay then live invalidations. One-based IDs; JSON run events include sequence,run_id,at,state,optional reason. Terminal end frame has run_id,state,last_event_id and no id. 60s or256-event rotation;10s heartbeats;4streams/tenant,32total;5s per write. Reconnect after last validated event. Not live stdout, physical-stop fencing or a hard real-time SLO.",
+        "description": "SSE lifecycle replay then live invalidations. One-based IDs; JSON run events include sequence,run_id,at,state,optional reason and reason_code. Terminal end frame has run_id,state,last_event_id and no id. 60s or256-event rotation;10s heartbeats;4streams/tenant,32total;5s per write. Reconnect after last validated event. Not live stdout, physical-stop fencing or a hard real-time SLO. Stream format defaults to version1; request AgentOS-Events-Version: 2 for optional reason_code. The Python client negotiates this automatically.",
         "responses": {
           "200": {
             "description": "Lifecycle SSE stream",
@@ -619,6 +619,20 @@
               "maxLength": 20
             },
             "description": "Last fully consumed lifecycle sequence for this run."
+          },
+          {
+            "name": "AgentOS-Events-Version",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "2"
+              ],
+              "default": "1"
+            },
+            "description": "Version1 (default) omits reason_code for older strict clients. Version2 includes optional stored reason_code. IDs/replay/end framing are identical."
           }
         ]
       }
@@ -659,6 +673,7 @@
               "internal_error",
               "invalid_cursor",
               "invalid_environment",
+              "invalid_event_version",
               "invalid_idempotency_key",
               "invalid_pagination",
               "invalid_request",
@@ -854,6 +869,9 @@
           },
           "reason": {
             "type": "string"
+          },
+          "reason_code": {
+            "$ref": "#/components/schemas/ReasonCode"
           }
         },
         "required": [
@@ -932,6 +950,9 @@
             "items": {
               "$ref": "#/components/schemas/Event"
             }
+          },
+          "reason_code": {
+            "$ref": "#/components/schemas/ReasonCode"
           }
         },
         "required": [
@@ -1103,6 +1124,23 @@
           "components"
         ],
         "additionalProperties": true
+      },
+      "ReasonCode": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "task_error",
+          "deadline_exceeded",
+          "cancelled",
+          "oom_killed",
+          "evicted",
+          "image_pull_failed",
+          "policy_denied",
+          "budget_exceeded",
+          "infra_failure",
+          "unknown"
+        ],
+        "description": "Structured outcome/cleanup-intent code. Optional for legacy records. policy_denied and budget_exceeded are reserved; no current gateway/budget producer exists. unknown means observed facts did not establish a cause."
       }
     },
     "responses": {

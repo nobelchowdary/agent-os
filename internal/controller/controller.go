@@ -173,10 +173,17 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 	// is enforced by the Job's activeDeadlineSeconds, not the admission clock.
 	if (r.State == model.Queued || r.State == model.Starting || r.State == model.Activating) && time.Since(r.CreatedAt) > 5*time.Minute {
 		ob, err := c.Backend.Observe(opctx, r.ID)
-		if err == nil && (ob.State == model.Running || ob.State == model.Succeeded || ob.State == model.Failed) {
+		if err == nil && !validObservationCode(ob.State, ob.ReasonCode) {
+			return errors.New("invalid backend observation reason code")
+		}
+		if err == nil && (ob.State == model.Running || ob.State == model.Succeeded || ob.State == model.Failed || ob.State == model.Cancelling) {
 			return c.observe(r, ob)
 		}
-		_, err = c.Store.Transition(r.ID, []model.State{r.State}, model.Cancelling, "startup wait exceeded")
+		code := model.ReasonInfraFailure
+		if err == nil && ob.ReasonCode == model.ReasonImagePullFailed {
+			code = model.ReasonImagePullFailed
+		}
+		_, err = c.Store.TransitionWithCode(r.ID, []model.State{r.State}, model.Cancelling, "startup wait exceeded", code)
 		return err
 	}
 	switch r.State {
@@ -202,7 +209,7 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 	case model.Running:
 		ob, err := c.Backend.Observe(opctx, r.ID)
 		if errors.Is(err, backend.ErrNotFound) {
-			_, err = c.Store.Transition(r.ID, []model.State{model.Running}, model.Cancelling, "execution disappeared; automatic replay disabled")
+			_, err = c.Store.TransitionWithCode(r.ID, []model.State{model.Running}, model.Cancelling, "execution disappeared; automatic replay disabled", model.ReasonInfraFailure)
 			return err
 		}
 		if err != nil {
@@ -210,14 +217,26 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 		}
 		return c.observe(r, ob)
 	case model.Cancelling:
+		if !validObservationCode(model.Cancelling, r.ReasonCode) {
+			return errors.New("invalid persisted cleanup reason code")
+		}
 		if err := c.Backend.Cancel(opctx, r.ID); err != nil {
 			return err
 		}
-		end := model.Cancelled
-		if r.Reason != "cancel requested" {
-			end = model.Failed
+		code := r.ReasonCode
+		if code == "" {
+			// Records written before structured codes existed retain the old
+			// exact-match cancellation compatibility. New intent uses the code.
+			code = model.ReasonUnknown
+			if r.Reason == "cancel requested" {
+				code = model.ReasonCancelled
+			}
 		}
-		_, err := c.Store.Transition(r.ID, []model.State{model.Cancelling}, end, r.Reason)
+		end := model.Failed
+		if code == model.ReasonCancelled {
+			end = model.Cancelled
+		}
+		_, err := c.Store.TransitionWithCode(r.ID, []model.State{model.Cancelling}, end, r.Reason, code)
 		return err
 	}
 	return nil
@@ -226,7 +245,7 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 func (c *Controller) activate(ctx context.Context, r model.Record) error {
 	err := c.Backend.Activate(ctx, r)
 	if errors.Is(err, backend.ErrNotFound) {
-		_, err = c.Store.Transition(r.ID, []model.State{model.Activating}, model.Cancelling, "execution disappeared after activation intent; replay disabled")
+		_, err = c.Store.TransitionWithCode(r.ID, []model.State{model.Activating}, model.Cancelling, "execution disappeared after activation intent; replay disabled", model.ReasonInfraFailure)
 		return err
 	}
 	if err != nil {
@@ -237,12 +256,43 @@ func (c *Controller) activate(ctx context.Context, r model.Record) error {
 }
 
 func (c *Controller) observe(r model.Record, ob backend.Observation) error {
-	if ob.State != model.Running && ob.State != model.Succeeded && ob.State != model.Failed {
+	// Validate before the same-state/no-progress paths. Otherwise an invalid
+	// observation could either look healthy or become an ignored store CAS
+	// conflict, leaving the controller stuck without reporting the failure.
+	if !validObservationCode(ob.State, ob.ReasonCode) {
+		return errors.New("invalid backend observation reason code")
+	}
+	if ob.State != model.Running && ob.State != model.Succeeded && ob.State != model.Failed && ob.State != model.Cancelling {
 		return nil
 	}
 	if r.State == ob.State {
 		return nil
 	}
-	_, err := c.Store.Transition(r.ID, []model.State{r.State}, ob.State, ob.Reason)
+	code := ob.ReasonCode
+	if code == "" {
+		code = model.DefaultReasonCode(ob.State)
+	}
+	_, err := c.Store.TransitionWithCode(r.ID, []model.State{r.State}, ob.State, ob.Reason, code)
 	return err
+}
+
+func validObservationCode(state model.State, code model.ReasonCode) bool {
+	if code == "" {
+		return true // Legacy observations omit causes; terminal defaults apply later.
+	}
+	if !code.Valid() {
+		return false
+	}
+	switch state {
+	case model.Starting:
+		// A transient image-pull hint is not persisted as a failed outcome.
+		return code == model.ReasonImagePullFailed
+	case model.Succeeded:
+		return code == model.ReasonCompleted
+	case model.Failed:
+		return code != model.ReasonCompleted && code != model.ReasonCancelled
+	case model.Cancelling:
+		return code != model.ReasonCompleted
+	}
+	return false
 }

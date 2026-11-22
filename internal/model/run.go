@@ -17,6 +17,48 @@ const (
 
 func (s State) Terminal() bool { return s == Succeeded || s == Failed || s == Cancelled }
 
+// ReasonCode describes an observed outcome or a persisted cleanup intent.
+// Policy and budget codes are reserved; this alpha has no such enforcement.
+type ReasonCode string
+
+const (
+	ReasonCompleted        ReasonCode = "completed"
+	ReasonTaskError        ReasonCode = "task_error"
+	ReasonDeadlineExceeded ReasonCode = "deadline_exceeded"
+	ReasonCancelled        ReasonCode = "cancelled"
+	ReasonOOMKilled        ReasonCode = "oom_killed"
+	ReasonEvicted          ReasonCode = "evicted"
+	ReasonImagePullFailed  ReasonCode = "image_pull_failed"
+	ReasonPolicyDenied     ReasonCode = "policy_denied"
+	ReasonBudgetExceeded   ReasonCode = "budget_exceeded"
+	ReasonInfraFailure     ReasonCode = "infra_failure"
+	ReasonUnknown          ReasonCode = "unknown"
+)
+
+func (code ReasonCode) Valid() bool {
+	switch code {
+	case ReasonCompleted, ReasonTaskError, ReasonDeadlineExceeded, ReasonCancelled,
+		ReasonOOMKilled, ReasonEvicted, ReasonImagePullFailed, ReasonPolicyDenied,
+		ReasonBudgetExceeded, ReasonInfraFailure, ReasonUnknown:
+		return true
+	}
+	return false
+}
+
+// DefaultReasonCode supplies only what a terminal state establishes. In
+// particular, an unspecified failed outcome is not evidence of a task error.
+func DefaultReasonCode(state State) ReasonCode {
+	switch state {
+	case Succeeded:
+		return ReasonCompleted
+	case Cancelled:
+		return ReasonCancelled
+	case Failed:
+		return ReasonUnknown
+	}
+	return ""
+}
+
 func (s State) Valid() bool {
 	switch s {
 	case Queued, Starting, Activating, Running, Cancelling, Succeeded, Failed, Cancelled:
@@ -93,18 +135,20 @@ type CreateRequest struct {
 }
 
 type Event struct {
-	At     time.Time `json:"at"`
-	State  State     `json:"state"`
-	Reason string    `json:"reason,omitempty"`
+	At         time.Time  `json:"at"`
+	State      State      `json:"state"`
+	Reason     string     `json:"reason,omitempty"`
+	ReasonCode ReasonCode `json:"reason_code,omitempty"`
 }
 
 type Record struct {
-	ID        string    `json:"id"`
-	TenantID  string    `json:"tenant_id"`
-	Spec      Spec      `json:"spec"`
-	State     State     `json:"state"`
-	Reason    string    `json:"reason,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Events    []Event   `json:"events"`
+	ID         string     `json:"id"`
+	TenantID   string     `json:"tenant_id"`
+	Spec       Spec       `json:"spec"`
+	State      State      `json:"state"`
+	Reason     string     `json:"reason,omitempty"`
+	ReasonCode ReasonCode `json:"reason_code,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+	Events     []Event    `json:"events"`
 }
