@@ -42,7 +42,7 @@ const (
 
 // ErrCancelPending means deletion was requested but Job/Pod disappearance has
 // not yet been observed. The caller must retain the run's reservation and retry.
-var ErrCancelPending = errors.New("execution cancellation is pending")
+var ErrCancelPending = backend.ErrPending
 
 type Backend struct {
 	client       kubernetes.Interface

@@ -2,6 +2,8 @@
 
 Date: November 19, 2026. Status: executable helpers and runtime profiles exist; the founder can set up EKS. No cluster has been connected, qualified or benchmarked yet. Use the [evaluation runbook](EVALUATION_RUNBOOK.md) for commands and evidence contracts.
 
+November 21 update: a [Python harness client](../sdk/python/README.md), resumable lifecycle events and controller health are implemented. Use the [tool-launch example](../examples/agent-harness/README.md) during Phase 1 after the runtime/CNI prerequisites are satisfied. Local client/server interoperability tests use a nonexecuting backend fixture; they do not add a live EKS result.
+
 ## Question to answer
 
 Can an existing sandbox stack meet a platform team's agent workload, isolation, recovery and cost requirements on EKS? Establish that baseline before implementing another runtime or claiming an execution advantage.

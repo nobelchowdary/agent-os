@@ -12,6 +12,9 @@ This first alpha provides a runnable execution API and constrained Python/Node e
 - Kubernetes Jobs with an administrator-selected gVisor or AWS Nitro isolated profile, non-root processes, read-only root filesystems, dropped capabilities and no workload Kubernetes token. Runtime profiles remain unqualified on live nodes.
 - Bearer-token authentication with tenant-scoped create, list, status, bounded logs and cancellation.
 - Durable run records and lifecycle events using transactional embedded storage.
+- Resumable live lifecycle events, bounded tenant-scoped history pagination and operational status.
+- Controller wakeups on committed admission/cancellation, failure/recovery health and graceful stream shutdown.
+- A standard-library Python client and an external harness example for submitting and monitoring tools.
 - Atomic tenant/global admission limits and persistent idempotency keys for duplicate submissions.
 - Suspended Job creation followed by separate activation; ambiguous initial creation does not immediately launch code.
 - Offline environment preview, deployment manifests, a small workload example set and CI checks.
@@ -46,6 +49,7 @@ Workload networking is denied by default; the Nitro profile also requests a NIC-
 ## Direction and contribution
 
 - [Getting started](docs/GETTING_STARTED.md): preview, cluster prerequisites, API examples and operational limits.
+- [Launch and live API](docs/LIVE_API.md): agent-harness integration, event replay, health and pagination; [Python client](sdk/python/README.md).
 - [Architecture decision](docs/decisions/0001-initial-execution-slice.md): the first backend and its scope.
 - [Roadmap](docs/ROADMAP.md): capability gates driven by workload evidence and customer needs.
 - [Alpha capability map](docs/ALPHA_CAPABILITY_MAP.md), [EKS evaluation brief](docs/EKS_EVALUATION_BRIEF.md), and [product-direction review](docs/PRODUCT_DIRECTION_REVIEW.md): current evidence and experiments before choosing a broader product.

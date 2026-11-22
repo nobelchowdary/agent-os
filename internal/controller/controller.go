@@ -19,27 +19,114 @@ type Controller struct {
 	Store   *store.Store
 	Backend backend.Backend
 	Logger  *slog.Logger
+
+	statusMu sync.RWMutex
+	status   Status
+}
+
+// Status describes the controller loop, not node isolation or workload health.
+// A successful pass means that every observed run was reconciled without an
+// operation error; a legitimate failed workload does not make the loop unhealthy.
+type Status struct {
+	Running             bool      `json:"running"`
+	LastCompletedAt     time.Time `json:"last_completed_at,omitzero"`
+	LastSuccessAt       time.Time `json:"last_success_at,omitzero"`
+	ConsecutiveFailures uint64    `json:"consecutive_failures"`
+}
+
+// Status returns an independent snapshot and is safe during reconciliation.
+func (c *Controller) Status() Status {
+	c.statusMu.RLock()
+	defer c.statusMu.RUnlock()
+	return c.status
 }
 
 func (c *Controller) Run(ctx context.Context) {
-	t := time.NewTicker(time.Second)
+	c.run(ctx, time.Second)
+}
+
+func (c *Controller) run(ctx context.Context, interval time.Duration) {
+	c.statusMu.Lock()
+	if c.status.Running || ctx.Err() != nil {
+		c.statusMu.Unlock()
+		return
+	}
+	c.status.Running = true
+	c.statusMu.Unlock()
+	defer func() {
+		c.statusMu.Lock()
+		c.status.Running = false
+		c.statusMu.Unlock()
+	}()
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// Capture the current generation before reading runs. A commit during
+		// reconciliation closes this channel and schedules another pass.
+		changed := c.Store.Changed()
 		if err := c.Reconcile(ctx); err != nil && ctx.Err() == nil {
-			c.Logger.Error("reconciliation failed", "error", err)
+			c.logger().Error("reconciliation failed", "category", "reconciliation_failed")
 		}
 		select {
 		case <-ctx.Done():
 			return
+		case <-changed:
 		case <-t.C:
 		}
 	}
 }
 
-func (c *Controller) Reconcile(ctx context.Context) error {
+// operationError deliberately excludes backend and database error text from its
+// display form. Callers may still inspect the cause with errors.Is/errors.As.
+type operationError struct {
+	category string
+	runID    string
+	cause    error
+}
+
+func (e *operationError) Error() string {
+	if e.runID == "" {
+		return e.category
+	}
+	return e.category + ": " + e.runID
+}
+
+func (e *operationError) Unwrap() error { return e.cause }
+
+func (c *Controller) logger() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return slog.Default()
+}
+
+func (c *Controller) completed(ctx context.Context, err error) {
+	c.statusMu.Lock()
+	defer c.statusMu.Unlock()
+	c.status.LastCompletedAt = time.Now().UTC()
+	// Shutting down is neither a failed pass nor evidence of recovery.
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		c.status.ConsecutiveFailures++
+		return
+	}
+	c.status.LastSuccessAt = c.status.LastCompletedAt
+	c.status.ConsecutiveFailures = 0
+}
+
+func (c *Controller) Reconcile(ctx context.Context) (result error) {
+	defer func() { c.completed(ctx, result) }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	runs, err := c.Store.Active()
 	if err != nil {
-		return err
+		return &operationError{category: "active_runs_read_failed", cause: err}
 	}
 	// Prioritize cancellation and bound concurrent Kubernetes calls. An unhealthy
 	// tenant must not serialize every other run behind its request timeouts.
@@ -50,6 +137,8 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 	}
 	close(work)
 	var wg sync.WaitGroup
+	var failuresMu sync.Mutex
+	var failures []error
 	for i := 0; i < min(8, len(runs)); i++ {
 		wg.Add(1)
 		go func() {
@@ -58,14 +147,23 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 				if ctx.Err() != nil {
 					return
 				}
-				if err := c.reconcileRun(ctx, r); err != nil && !errors.Is(err, store.ErrConflict) {
-					c.Logger.Warn("run reconciliation will retry", "run_id", r.ID, "error", err)
+				if err := c.reconcileRun(ctx, r); err != nil && !errors.Is(err, store.ErrConflict) && !errors.Is(err, backend.ErrPending) {
+					failure := &operationError{category: "run_reconciliation_failed", runID: r.ID, cause: err}
+					failuresMu.Lock()
+					failures = append(failures, failure)
+					failuresMu.Unlock()
+					if ctx.Err() == nil {
+						c.logger().Warn("run reconciliation will retry", "run_id", r.ID, "category", failure.category)
+					}
 				}
 			}
 		}()
 	}
 	wg.Wait()
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
 }
 
 func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {

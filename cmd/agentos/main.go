@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -82,14 +83,19 @@ func run() error {
 	defer stop()
 	done := make(chan struct{})
 	if !*preview {
+		c := &controller.Controller{Store: db, Backend: b, Logger: slog.Default()}
+		s.ControllerStatus = c.Status
 		go func() {
 			defer close(done)
-			(&controller.Controller{Store: db, Backend: b, Logger: slog.Default()}).Run(ctx)
+			c.Run(ctx)
 		}()
 	} else {
 		close(done)
 	}
 	h := &http.Server{Addr: *listen, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 * 1024}
+	// Live streams and backend requests must leave before the database closes.
+	// Normal requests retain finite timeouts; SSE adds a deadline per flush.
+	h.BaseContext = func(net.Listener) context.Context { return ctx }
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("agentos listening", "address", *listen, "preview", *preview)
@@ -102,7 +108,9 @@ func run() error {
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = h.Shutdown(shutdown)
+	if err := h.Shutdown(shutdown); err != nil {
+		_ = h.Close()
+	}
 	<-done
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

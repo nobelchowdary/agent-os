@@ -4,6 +4,7 @@ package store
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -24,6 +26,7 @@ var (
 	ErrConflict            = errors.New("run state conflict")
 	ErrQuota               = errors.New("active run quota exceeded")
 	ErrIdempotencyConflict = errors.New("idempotency key already used for another spec")
+	ErrCursor              = errors.New("invalid list cursor")
 )
 
 var (
@@ -40,9 +43,20 @@ const (
 	maxReasonBytes   = 1024
 	defaultListLimit = 100
 	maxListLimit     = 1000
+	// Version, tenant digest, fixed-width time, and the bounded run ID.
+	cursorVersion    = 1
+	cursorHeaderSize = 1 + sha256.Size
+	maxRawCursorSize = cursorHeaderSize + 12 + maxIdentityBytes
+	maxCursorBytes   = (maxRawCursorSize*8 + 5) / 6
 )
 
-type Store struct{ db *bolt.DB }
+type Store struct {
+	db *bolt.DB
+	// Serialize commit and publication so concurrent writes cannot publish an
+	// older invalidation after a subscriber has observed a later generation.
+	mu      sync.Mutex
+	changed chan struct{}
+}
 
 type idempotencyEntry struct {
 	ID          string `json:"id"`
@@ -92,10 +106,32 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, changed: make(chan struct{})}, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db.Close()
+}
+
+// Changed returns the current invalidation channel. Subscribe before reading
+// records, then read again when the channel closes. Notifications may coalesce;
+// persisted records and event history are authoritative. Only successful new
+// admissions and actual state changes close a generation, after durable commit.
+// Closing the Store does not notify; callers must also watch their own context.
+func (s *Store) Changed() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changed
+}
+
+// publishChanged runs under mu only after the write transaction has committed.
+func (s *Store) publishChanged() {
+	previous := s.changed
+	s.changed = make(chan struct{})
+	close(previous)
+}
 
 // Admit stores a queued run and reserves global and tenant capacity in the same
 // transaction. Every nonterminal run occupies capacity, including cancellations.
@@ -116,6 +152,8 @@ func (s *Store) Admit(record model.Record, idempotencyKey string, maxTenantActiv
 	}
 	var result model.Record
 	created := false
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	err = s.db.Update(func(tx *bolt.Tx) error {
 		records := tx.Bucket(recordsBucket)
 		keys := tx.Bucket(idempotencyBucket).Bucket([]byte(record.TenantID))
@@ -209,6 +247,9 @@ func (s *Store) Admit(record model.Record, idempotencyKey string, maxTenantActiv
 	if err != nil {
 		return model.Record{}, false, err
 	}
+	if created {
+		s.publishChanged()
+	}
 	return result, created, nil
 }
 
@@ -231,6 +272,21 @@ func (s *Store) Get(tenant, id string) (model.Record, error) {
 // List returns at most limit runs in descending creation order. Nonpositive
 // limits default to 100; limits greater than 1000 are capped at 1000.
 func (s *Store) List(tenant string, limit int) ([]model.Record, error) {
+	records, _, err := s.ListPage(tenant, limit, "")
+	return records, err
+}
+
+// ListPage returns runs newest first and a cursor for the next older page, or an
+// empty cursor at the end. Equal creation times are ordered by descending ID.
+// The opaque cursor is scoped to a tenant and an exclusive order-key boundary.
+// Each page reads at most limit records and one additional index key, using a
+// keyset seek rather than scanning earlier pages. Inserts newer than the cursor
+// do not shift later pages; pagination is not a cross-request snapshot.
+func (s *Store) ListPage(tenant string, limit int, before string) ([]model.Record, string, error) {
+	boundary, err := decodeCursor(tenant, before)
+	if err != nil {
+		return nil, "", err
+	}
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
@@ -238,13 +294,26 @@ func (s *Store) List(tenant string, limit int) ([]model.Record, error) {
 		limit = maxListLimit
 	}
 	result := make([]model.Record, 0)
-	err := s.db.View(func(tx *bolt.Tx) error {
+	next := ""
+	err = s.db.View(func(tx *bolt.Tx) error {
 		index := tx.Bucket(tenantIndexBucket).Bucket([]byte(tenant))
 		if index == nil {
 			return nil
 		}
 		cursor := index.Cursor()
-		for key, id := cursor.Last(); key != nil && len(result) < limit; key, id = cursor.Prev() {
+		key, id := cursor.Last()
+		if boundary != nil {
+			key, id = cursor.Seek(boundary)
+			if key == nil {
+				key, id = cursor.Last()
+			} else {
+				// Seek is inclusive and may land beyond a removed boundary.
+				// Moving back always selects the greatest key strictly below it.
+				key, id = cursor.Prev()
+			}
+		}
+		var lastKey []byte
+		for key != nil && len(result) < limit {
 			record, err := readRecord(tx.Bucket(recordsBucket), string(id))
 			if err != nil {
 				return err
@@ -253,10 +322,18 @@ func (s *Store) List(tenant string, limit int) ([]model.Record, error) {
 				return errors.New("corrupt tenant index")
 			}
 			result = append(result, record)
+			lastKey = key
+			key, id = cursor.Prev()
+		}
+		if key != nil {
+			next = encodeCursor(tenant, lastKey)
 		}
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return nil, "", err
+	}
+	return result, next, nil
 }
 
 func (s *Store) Active() ([]model.Record, error) {
@@ -284,6 +361,9 @@ func (s *Store) Transition(id string, allowed []model.State, to model.State, rea
 		return model.Record{}, fmt.Errorf("%w: unknown target state", ErrConflict)
 	}
 	var result model.Record
+	changed := false
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		records := tx.Bucket(recordsBucket)
 		record, err := readRecord(records, id)
@@ -335,9 +415,49 @@ func (s *Store) Transition(id string, allowed []model.State, to model.State, rea
 			}
 		}
 		result = record
+		changed = true
 		return nil
 	})
+	if err == nil && changed {
+		s.publishChanged()
+	}
 	return result, err
+}
+
+func encodeCursor(tenant string, key []byte) string {
+	raw := make([]byte, cursorHeaderSize+len(key))
+	raw[0] = cursorVersion
+	scope := sha256.Sum256([]byte(tenant))
+	copy(raw[1:cursorHeaderSize], scope[:])
+	copy(raw[cursorHeaderSize:], key)
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func decodeCursor(tenant, before string) ([]byte, error) {
+	if before == "" {
+		return nil, nil
+	}
+	if len(before) > maxCursorBytes {
+		return nil, ErrCursor
+	}
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(before)
+	if err != nil || len(raw) < cursorHeaderSize+13 || len(raw) > maxRawCursorSize || raw[0] != cursorVersion {
+		return nil, ErrCursor
+	}
+	// DecodeString permits newlines even in strict mode. Require the canonical
+	// unpadded URL form so malformed alternate encodings are rejected as well.
+	if base64.RawURLEncoding.EncodeToString(raw) != before {
+		return nil, ErrCursor
+	}
+	scope := sha256.Sum256([]byte(tenant))
+	if !bytes.Equal(raw[1:cursorHeaderSize], scope[:]) {
+		return nil, ErrCursor
+	}
+	key := raw[cursorHeaderSize:]
+	if binary.BigEndian.Uint32(key[8:12]) >= 1_000_000_000 {
+		return nil, ErrCursor
+	}
+	return key, nil
 }
 
 func readRecord(records *bolt.Bucket, id string) (model.Record, error) {

@@ -164,6 +164,8 @@ The caller selects an administrator-defined `template`, optional `command`, and 
 
 `examples/node-task.json` exercises the Node template. `examples/timeout.json` sleeps past its two-second deadline; the Job should fail rather than run indefinitely. Treat these as cluster acceptance exercises to run, not evidence that this repository has already passed live cluster testing.
 
+For an external agent harness, use the [Python client and tool-launch example](../examples/agent-harness/README.md). It submits through this same API, waits on resumable lifecycle events and retrieves bounded logs. [Live API documentation](LIVE_API.md) covers event cursors, tenant-scoped paginated history, operational status and controller readiness. The example is an offline tool workflow; running an entire AI agent inside the sandbox with provider access remains a separate integration gate.
+
 ## State, logs, and restart limits
 
 The API runs as one replica with an embedded bbolt database under `/var/lib/agentos/state/runs.db`. Keep the PVC and `Recreate` strategy. Multiple API replicas, a shared database opened by several processes, and horizontal control-plane scaling are unsupported. Accepted run metadata and state events survive an ordinary API restart when its database volume survives; this is not a persistent workload filesystem or a process checkpoint.

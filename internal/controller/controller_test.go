@@ -25,6 +25,8 @@ type fakeBackend struct {
 }
 
 func (b *fakeBackend) Ready(context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.readyErr {
 		return errors.New("not ready")
 	}
@@ -68,7 +70,7 @@ func (b *fakeBackend) Cancel(_ context.Context, id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.cancelPending {
-		return errors.New("deletion pending")
+		return backend.ErrPending
 	}
 	delete(b.jobs, id)
 	return nil
@@ -96,6 +98,13 @@ func tick(t *testing.T, c *Controller) {
 		t.Fatal(err)
 	}
 }
+
+func retry(t *testing.T, c *Controller) {
+	t.Helper()
+	if err := c.Reconcile(context.Background()); err == nil {
+		t.Fatal("expected a retryable reconciliation error")
+	}
+}
 func state(t *testing.T, c *Controller, r model.Record) model.State {
 	t.Helper()
 	v, err := c.Store.Get(r.TenantID, r.ID)
@@ -109,7 +118,7 @@ func TestAmbiguousSubmitDoesNotCreateSecondExecution(t *testing.T) {
 	c, b, r := setup(t)
 	b.ambiguous = true
 	tick(t, c)
-	tick(t, c)
+	retry(t, c)
 	if state(t, c, r) != model.Starting {
 		t.Fatal("uncertain submission released reservation")
 	}
@@ -141,6 +150,9 @@ func TestCancelRetainsQuotaUntilBackendCleanup(t *testing.T) {
 	if state(t, c, r) != model.Cancelling {
 		t.Fatal("cleanup not confirmed")
 	}
+	if snapshot := c.Status(); snapshot.ConsecutiveFailures != 0 || snapshot.LastSuccessAt.IsZero() {
+		t.Fatalf("normal asynchronous cleanup made controller unhealthy: %+v", snapshot)
+	}
 	_, _, err = c.Store.Admit(model.Record{ID: "another", TenantID: "local"}, "", 1, 1)
 	if !errors.Is(err, store.ErrQuota) {
 		t.Fatal("capacity released early", err)
@@ -156,7 +168,7 @@ func TestLostActivationAndDeletedJobCannotRecreateWork(t *testing.T) {
 	c, b, r := setup(t)
 	b.activationAmbiguous = true
 	tick(t, c)
-	tick(t, c)
+	retry(t, c)
 	if state(t, c, r) != model.Activating {
 		t.Fatal("activation intent not preserved")
 	}
@@ -206,7 +218,7 @@ func TestDeadlineAndMissingExecution(t *testing.T) {
 	t.Run("unready remains queued", func(t *testing.T) {
 		c, b, r := setup(t)
 		b.readyErr = true
-		tick(t, c)
+		retry(t, c)
 		if state(t, c, r) != model.Queued || b.creates != 0 {
 			t.Fatal("unready execution")
 		}

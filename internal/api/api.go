@@ -10,22 +10,30 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nobelchowdary/agent-os/internal/backend"
 	"github.com/nobelchowdary/agent-os/internal/config"
+	"github.com/nobelchowdary/agent-os/internal/controller"
 	"github.com/nobelchowdary/agent-os/internal/model"
 	"github.com/nobelchowdary/agent-os/internal/store"
 )
 
 type Server struct {
-	Config     config.Config
-	Principals []config.Principal
-	Store      *store.Store
-	Backend    backend.Backend
-	Preview    bool
-	Render     func(model.Record) (any, error)
+	Config           config.Config
+	Principals       []config.Principal
+	Store            *store.Store
+	Backend          backend.Backend
+	Preview          bool
+	Render           func(model.Record) (any, error)
+	ControllerStatus func() controller.Status
+	streamMu         sync.Mutex
+	streamCounts     map[string]int
+	streams          int
 }
 
 var runID = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -45,12 +53,14 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /v1/templates", s.auth(func(w http.ResponseWriter, r *http.Request, tenant string) {
 		write(w, 200, map[string]any{"templates": s.Config.Templates, "preview": s.Preview})
 	}))
+	m.HandleFunc("GET /v1/status", s.auth(s.status))
 	m.HandleFunc("POST /v1/plan", s.auth(s.plan))
 	m.HandleFunc("POST /v1/runs", s.auth(s.create))
 	m.HandleFunc("GET /v1/runs", s.auth(s.list))
 	m.HandleFunc("GET /v1/runs/{id}", s.auth(s.get))
 	m.HandleFunc("POST /v1/runs/{id}/cancel", s.auth(s.cancel))
 	m.HandleFunc("GET /v1/runs/{id}/logs", s.auth(s.logs))
+	m.HandleFunc("GET /v1/runs/{id}/events", s.auth(s.events))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")
@@ -65,6 +75,10 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.Store.Active(); err != nil {
 		problem(w, 503, "storage unavailable")
+		return
+	}
+	if !s.controllerHealthy() {
+		problem(w, 503, "execution controller unavailable")
 		return
 	}
 	if err := s.Backend.Ready(r.Context()); err != nil {
@@ -212,7 +226,25 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request, tenant string) {
 	}
 }
 func (s *Server) list(w http.ResponseWriter, r *http.Request, tenant string) {
-	v, err := s.Store.List(tenant, 100)
+	query, err := strictQuery(r, "limit", "before")
+	if err != nil {
+		problem(w, 400, "invalid pagination parameters")
+		return
+	}
+	limit := 100
+	if raw, ok := query["limit"]; ok {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			problem(w, 400, "limit must be between 1 and 100")
+			return
+		}
+		limit = n
+	}
+	v, next, err := s.Store.ListPage(tenant, limit, query["before"])
+	if errors.Is(err, store.ErrCursor) {
+		problem(w, 400, "invalid pagination cursor")
+		return
+	}
 	if err != nil {
 		problem(w, 503, "storage unavailable")
 		return
@@ -220,7 +252,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, tenant string) {
 	if v == nil {
 		v = []model.Record{}
 	}
-	write(w, 200, map[string]any{"runs": v})
+	write(w, 200, map[string]any{"runs": v, "next_cursor": next})
 }
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request, tenant string) {
 	if s.Preview {
@@ -264,6 +296,15 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, tenant string) {
 	if err != nil {
 		problem(w, 503, "execution logs unavailable")
 		return
+	}
+	// JSON replaces invalid UTF-8, which can expand raw log bytes. Apply the
+	// public byte bound to the valid text actually returned to clients too.
+	logs = strings.ToValidUTF8(logs, "\uFFFD")
+	if len(logs) > int(limit) {
+		logs = logs[:limit]
+		for !utf8.ValidString(logs) {
+			logs = logs[:len(logs)-1]
+		}
 	}
 	write(w, 200, map[string]any{"run_id": v.ID, "logs": logs, "limit_bytes": limit})
 }

@@ -2,6 +2,8 @@
 
 Reviewed November 19, 2026. Base implementation reference: `30a8e33135ed6051dc569537dfdc3e5afcc3ffeb`; the current runtime-profile/evidence iteration extends that base under [decision 0002](decisions/0002-runtime-profiles-and-evidence.md).
 
+Updated November 21 for the [live lifecycle/client iteration](decisions/0003-live-lifecycle-and-harness-client.md). The November 19 evidence below remains historical. New local HTTP/2/SSE, storage, controller and Python-client tests verify contracts; no EKS workload has run. [Launch and live API](LIVE_API.md) describes what an external harness can use and what still requires integration.
+
 This document can be shared with a researcher who cannot access the private repository. It distinguishes inspected local code, documented upstream capabilities and results that still need measurement. No upstream runtime was installed or benchmarked for this review.
 
 ## What the alpha actually does
@@ -18,12 +20,15 @@ Agent OS is a small authenticated Kubernetes Job execution service. An administr
 | Access to tools/models | Workload egress denied by default | No controlled provider access, credential injection, tool policy or action approval | [installation guide](GETTING_STARTED.md) |
 | Economics | Fixed CPU/RAM/storage bounds and execution deadline | No token/dollar budget, root/child accounting, warm pool, density optimization or measured savings | [evaluation plan](EVALUATION_PLAN.md) |
 | Evidence tooling | Explicit-context inventory; preregistered cold execution collector; Substrate continuity probe; node CPU/memory observations; operator journal and decision report | Fake-client tests do not establish isolation; upstream/controller and AWS installation are operator prerequisites | [runbook](EVALUATION_RUNBOOK.md) |
+| Live operation and client | Durable per-run SSE replay/resume; commit-driven controller wakeups; bounded streams; tenant history pagination; controller status; stdlib Python submit/wait/cancel/log client | Lifecycle events are not stdout or a hard real-time guarantee; the example invokes an offline tool from an external harness and is not a complete in-sandbox AI agent | [live API](LIVE_API.md), [client](../sdk/python/README.md) |
 
 ## Evidence already available
 
 The [initial implementation CI run](https://github.com/nobelchowdary/agent-os/actions/runs/44431891574) passed formatting, vet, race-enabled tests, binary build, compiled HTTP preview smoke and a Docker build for commit `c2469769ea65195559311803f465d6d0990e8ce6`. This historical run does not validate the current iteration. The expanded [Makefile](../Makefile) and [workflow](../.github/workflows/ci.yml) also run Python evaluation-tool tests; local checks and CI are separate from live qualification.
 
 For the November 19 runtime-profile/evidence iteration, local `make check` passed Go vet/race tests, 72 Python tests, a binary build and the compiled preview smoke for legacy/explicit gVisor and Nitro configurations. The API image built and served authenticated preview requests as a non-root, read-only container; both deployment variants rendered. The dedicated continuity fixture also built for Linux/amd64 and passed its local container smoke. These are local packaging/contract checks, not an EKS execution result.
+
+For the November 21 live-lifecycle iteration, local `make check` passed vet, Go race tests, 88 Python tests, a binary build and all three profile preview smokes. A Python client also exercised the real HTTP API, durable store and controller with a nonexecuting backend fixture; a real HTTP/2 test covered an idle event stream. The API image built and passed authenticated status/plan previews in non-root, read-only containers for gVisor and Nitro configurations. No workload or model call ran on a cluster.
 
 Backend tests use fake Kubernetes clients or a local HTTP test server. They cover lifecycle and API contracts, not physical isolation or cloud performance. There are **no published live-cluster acceptance results, raw performance benchmarks, real-agent quality trials or token-savings results**. Numerical targets in the evaluation plan are hypotheses.
 

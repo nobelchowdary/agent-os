@@ -8,6 +8,8 @@ The November 19 [capability comparison](ALPHA_CAPABILITY_MAP.md) keeps execution
 
 Implemented for that milestone: administrator-owned gVisor/offline Nitro profiles, declaration inventory, Substrate continuity smoke, registered cold execution collection, node resource sampling, operator-effort journals and decision gates. [Runbook](EVALUATION_RUNBOOK.md). Live qualification, resident warm-pool performance and disruptive/cross-instance recovery remain unmeasured. Upstream compatibility notes and concrete reproductions are required outputs even if no product advantage appears.
 
+The November 21 iteration adds resumable committed lifecycle events, immediate controller wakeups for admission/cancellation, controller health, tenant-scoped history pagination and a Python harness client. [Live API](LIVE_API.md), [decision 0003](decisions/0003-live-lifecycle-and-harness-client.md). Its acceptance tests cover lost-wakeup/replay, tenant/cursor separation, stream bounds/disconnection, health recovery and pending cleanup. Actual agent execution on EKS and controlled provider access remain the next integration gates; this iteration does not establish runtime performance or a full in-sandbox AI agent.
+
 | Stage | Capability | Evidence required before expanding |
 | --- | --- | --- |
 | First alpha | Authenticated tenant API; administrator-owned Python/Node templates; bounded Jobs requiring gVisor; default-deny workload policy prerequisite; admission limits; idempotent submission; persisted run metadata; status/cancel/log access; local Job preview | Automated contract tests, source checks, reproducible build instructions; no claim of live-cluster qualification |
