@@ -45,11 +45,13 @@ def fetch_verified(name, destination):
 
 
 def cluster_config():
-    # kind v0.33 uses containerd 2.x / config v3. The runsc handler invokes
-    # the actual gVisor shim and binary; no runc alias or fallback is allowed.
-    patch = '''[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc]
+    # kind v0.33 ships containerd 2.x with a version 2 config. Keep its plugin
+    # namespace: mixing in v3 runtimes prevents migration of kind's existing
+    # runc systemd options and makes kubelet select the cgroupfs driver.
+    # The runsc handler invokes the actual gVisor shim; no fallback is allowed.
+    patch = '''[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
   runtime_type = "io.containerd.runsc.v1"
-[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc.options]
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc.options]
   TypeUrl = "io.containerd.runsc.v1.options"
   ConfigPath = "/etc/containerd/runsc.toml"
 '''
@@ -58,6 +60,10 @@ def cluster_config():
             'nodes': [{'role': 'control-plane', 'image': NODE_IMAGE},
                       {'role': 'worker', 'image': NODE_IMAGE},
                       {'role': 'worker', 'image': NODE_IMAGE}]}
+
+
+def runsc_config():
+    return '[runsc_config]\n  platform = "systrap"\n  systemd-cgroup = "true"\n'
 
 
 def main():
@@ -93,7 +99,7 @@ def main():
     with tarfile.open(bindir / 'gvisor.tar.bz2') as archive:
         archive.extractall(runtime, filter='data')
     shim_config = WORK / 'runsc.toml'
-    shim_config.write_text('[runsc_config]\n  platform = "systrap"\n  systemd-cgroup = "true"\n')
+    shim_config.write_text(runsc_config())
     for node in command([kind, 'get', 'nodes', '--name', NAME]).splitlines():
         for leaf in ('runsc', 'containerd-shim-runsc-v1', 'gvisor-bin'):
             command(['docker', 'cp', str(runtime / leaf), node + ':/usr/local/bin/' + leaf])

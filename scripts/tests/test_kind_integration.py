@@ -4,6 +4,7 @@ import io
 from pathlib import Path
 import tempfile
 import threading
+import tomllib
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -23,6 +24,37 @@ campaign = module('kind_integration')
 
 
 class KindSafetyTests(unittest.TestCase):
+    def test_runsc_patch_preserves_kind_v2_systemd_runtime_configuration(self):
+        # kind v0.33's node image keeps a v2 config even with containerd 2.x.
+        # A separate v3 runtimes table shadows the entire v2 runtime map during
+        # containerd migration, losing runc's systemd setting before kubelet starts.
+        image_config = '''version = 2
+[plugins."io.containerd.grpc.v1.cri".containerd]
+  default_runtime_name = "runc"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+  runtime_type = "io.containerd.runc.v2"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+  SystemdCgroup = true
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.test-handler]
+  runtime_type = "io.containerd.runc.v2"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.test-handler.options]
+  SystemdCgroup = true
+'''
+        config = bootstrap.cluster_config()
+        merged = tomllib.loads(image_config + '\n' + '\n'.join(config['containerdConfigPatches']))
+        self.assertEqual(merged['version'], 2)
+        self.assertEqual(set(merged['plugins']), {'io.containerd.grpc.v1.cri'})
+        containerd = merged['plugins']['io.containerd.grpc.v1.cri']['containerd']
+        self.assertEqual(containerd['default_runtime_name'], 'runc')
+        for runtime in ('runc', 'test-handler'):
+            self.assertTrue(containerd['runtimes'][runtime]['options']['SystemdCgroup'])
+        runsc = containerd['runtimes']['runsc']
+        self.assertEqual(runsc['runtime_type'], 'io.containerd.runsc.v1')
+        self.assertEqual(runsc['options'], {'TypeUrl': 'io.containerd.runsc.v1.options',
+                                            'ConfigPath': '/etc/containerd/runsc.toml'})
+        self.assertEqual(tomllib.loads(bootstrap.runsc_config()),
+                         {'runsc_config': {'platform': 'systrap', 'systemd-cgroup': 'true'}})
+
     def test_multiple_kubectl_resource_documents_preserve_deployment_and_storage(self):
         import json
         items = [{'apiVersion': 'v1', 'kind': 'PersistentVolumeClaim'},
@@ -84,15 +116,18 @@ class KindSafetyTests(unittest.TestCase):
 
     def test_failure_diagnostics_omit_sensitive_pod_fields(self):
         cluster = campaign.Cluster.__new__(campaign.Cluster)
+        cluster.calls = []
+        cluster.token = 'private-value'
         pod = {'metadata': {'namespace': 'test', 'name': 'pod', 'annotations': {'token': 'private-value'}},
                'spec': {'containers': [{'name': 'agent', 'env': [{'value': 'private-value'}]}]},
                'status': {'phase': 'Pending', 'message': 'private-value', 'containerStatuses': [
                    {'name': 'agent', 'state': {'waiting': {'reason': 'ImagePullBackOff', 'message': 'private-value'}}}]}}
         import json
-        with patch.object(cluster, 'kubectl', return_value=json.dumps({'items': [pod]})):
+        with patch.object(cluster, 'kubectl', return_value=json.dumps({'items': [pod]})), patch.object(cluster, 'obj', return_value={'items': [{'reason': 'Failed', 'message': 'runtime error private-value'}]}):
             value = cluster.diagnostics()
         self.assertNotIn('private-value', json.dumps(value))
         self.assertEqual(value['pods'][0]['containers'][0]['waiting_reason'], 'ImagePullBackOff')
+        self.assertEqual(value['workload_events'][0]['message'], 'runtime error [redacted]')
 
 
 if __name__ == '__main__':
