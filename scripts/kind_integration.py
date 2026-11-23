@@ -162,6 +162,14 @@ class Cluster:
     def finish(self, run, state=None, reason=None, timeout=240):
         result = eventually(lambda: self.get(run), lambda item: item['state'] in TERMINAL,
                             timeout, 'run_never_terminal')
+        attachment = result.get('result', {})
+        output = attachment.get('output_head', '') + attachment.get('output_tail', '')
+        self.calls.append({'state': result['state'], 'reason_code': result.get('reason_code'),
+                           'result_status': attachment.get('status'), 'exit_code': attachment.get('exit_code'),
+                           'output_complete': attachment.get('output_complete'),
+                           'missing_dmesg_command': 'dmesg' in output and 'FileNotFoundError' in output,
+                           'denied_dmesg': 'dmesg' in output and 'Operation not permitted' in output})
+        self.calls = self.calls[-20:]
         require(state is None or result['state'] == state, 'wrong_terminal_state')
         require(reason is None or result.get('reason_code') == reason, 'wrong_terminal_reason')
         require(sum(event['state'] in TERMINAL for event in result['events']) == 1, 'nonunique_terminal_history')
@@ -187,7 +195,7 @@ class Cluster:
         self.request('GET', '/v1/status', retry=True)
 
     def diagnostics(self):
-        """Only status categories, never logs, commands, Secrets or env values."""
+        """Status summaries and redacted workload events; never logs or Secrets."""
         try:
             pods = json.loads(self.kubectl('get', 'pods', '--all-namespaces', '-o', 'json', timeout=15))
             result = []
@@ -200,7 +208,15 @@ class Cluster:
                         'terminated_reason': item.get('state', {}).get('terminated', {}).get('reason'),
                         'exit_code': item.get('state', {}).get('terminated', {}).get('exitCode')}
                         for item in status.get('containerStatuses', [])]})
-            return {'pods': result}
+            diagnostics = {'pods': result, 'recent_run_outcomes': self.calls}
+            try:
+                events = self.obj('events')['items']
+                diagnostics['workload_events'] = [{'reason': event.get('reason'),
+                    'message': event.get('message', '').replace(self.token, '[redacted]')[:1024]}
+                    for event in events[-30:]]
+            except Exception:
+                diagnostics['events_unavailable'] = True
+            return diagnostics
         except Exception:
             return {'unavailable': True}
 
