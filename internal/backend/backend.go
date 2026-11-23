@@ -18,6 +18,26 @@ type Observation struct {
 	ReasonCode model.ReasonCode
 }
 
+// ResultCapturer is an optional runtime capability. Output is untrusted data;
+// an unavailable/partial result must never be mistaken for an observed exit.
+type ResultCapturer interface {
+	CaptureResult(context.Context, string) (model.ExecutionResult, error)
+}
+
+// Execution identifies a managed-label Job for reconciliation. Inventory is
+// not authority to adopt it: callers must match a durable record, then Cleanup
+// validates the current Job against that record before requesting deletion.
+type Execution struct {
+	ID       string
+	SpecHash string
+	Terminal bool
+}
+
+type JobInventory interface {
+	ListExecutions(context.Context) ([]Execution, error)
+	Cleanup(context.Context, model.Record) error
+}
+
 // Backend operations must be idempotent for a deterministic run ID.
 type Backend interface {
 	Ready(context.Context) error

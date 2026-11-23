@@ -1,4 +1,8 @@
 {
+  "startup_timeout_seconds": 300,
+  "result_retention_seconds": 86400,
+  "kubernetes_qps": 50,
+  "kubernetes_burst": 100,
   "namespace": "agentos-workloads",
   "runtime_profile": {
     "kind": "aws-nitro-isolated",

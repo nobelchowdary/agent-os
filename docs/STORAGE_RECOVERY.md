@@ -14,7 +14,7 @@ These commands operate on a **stopped API's metadata database**. They do not con
   --output /absolute/private/backups/pre-upgrade.db
 ```
 
-The JSON result reports the operation, schema version, SHA-256, store epoch, run count, active count and byte size. Keep the backup and its checksum securely; the checksum detects drift relative to a trusted retained value and does not authenticate who produced the file. Database files can contain submitted code, run metadata and idempotency keys. Keep them out of Git and public logs.
+The JSON result reports the operation, schema version, SHA-256, store epoch, run count, active count and byte size. Keep the backup and its checksum securely; the checksum detects drift relative to a trusted retained value and does not authenticate who produced the file. Database files can contain submitted code, captured workload output, run metadata and idempotency keys. Keep them out of Git and public logs.
 
 4. Exercise restore to a **new** path using the actual checksum from the backup result:
 
@@ -40,9 +40,9 @@ Failures use fixed categories rather than printing database contents or raw path
 
 ## Version compatibility
 
-The current store schema is version 2. Normal API startup transactionally initializes a new database or upgrades a complete version 0/1 database by adding version metadata and a random durable store epoch. This migration does not rewrite records, specification fingerprints, idempotency keys or old terminal history. Unsupported newer/malformed versions and incomplete layouts fail closed. Ordinary restarts retain the epoch.
+The current store schema is version 3. Normal API startup transactionally initializes a new database or upgrades a complete version 0/1/2 database by adding version metadata and a random durable store epoch. This migration does not rewrite records, specification fingerprints, idempotency keys or old terminal history. Unsupported newer/malformed versions and incomplete layouts fail closed. Schema 2 upgrades preserve the existing epoch/cursors and add a separate result bucket. Ordinary restarts retain the epoch.
 
-`check` and `backup` inspect/copy supported version 0/1/2 sources without migrating or mutating them. A legacy source without an epoch reports an empty epoch. Backup preserves exact bytes and checksum. Restore first verifies the trusted source checksum, then migrates a private temporary copy to schema 2 and rotates its epoch before publishing. It validates the transformed database again. Restore returns `source_sha256` for the input and `sha256` for the new destination; these differ because restore changes metadata. The source backup stays unchanged. A second restore of the same backup gets another new epoch.
+`check` and `backup` inspect/copy supported version 0/1/2/3 sources without migrating or mutating them. A legacy source without an epoch reports an empty epoch. Backup preserves exact bytes and checksum. Restore first verifies the trusted source checksum, then migrates a private temporary copy to schema 3 and rotates its epoch before publishing. It validates the transformed database again. Restore returns `source_sha256` for the input and `sha256` for the new destination; these differ because restore changes metadata. The source backup stays unchanged. A second restore of the same backup gets another new epoch.
 
 ## Client recovery contract
 

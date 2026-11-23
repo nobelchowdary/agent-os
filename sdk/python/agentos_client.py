@@ -119,6 +119,32 @@ def _json(encoded):
     return value
 
 
+def _execution_result(value):
+    if "result" not in value:
+        return
+    result = value["result"]
+    required = {"output_head", "output_tail", "output_truncated", "output_complete", "status", "captured_at", "expires_at"}
+    if (not isinstance(result, dict) or not required <= set(result) or not set(result) <= required | {"exit_code"}
+            or not isinstance(result.get("status"), str) or result["status"] not in {"captured", "unavailable", "expired"}
+            or not isinstance(result.get("output_head"), str) or not isinstance(result.get("output_tail"), str)
+            or type(result.get("output_truncated")) is not bool or type(result.get("output_complete")) is not bool
+            or ("exit_code" in result and (type(result["exit_code"]) is not int or not -(2**31) <= result["exit_code"] < 2**31))):
+        raise AgentOSProtocolError("invalid_execution_result")
+    try:
+        if len(result["output_head"].encode("utf-8")) + len(result["output_tail"].encode("utf-8")) > 65536:
+            raise ValueError()
+        captured = datetime.fromisoformat(result["captured_at"].replace("Z", "+00:00"))
+        expires = datetime.fromisoformat(result["expires_at"].replace("Z", "+00:00"))
+        if captured.tzinfo is None or expires.tzinfo is None or expires <= captured:
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError, UnicodeError):
+        raise AgentOSProtocolError("invalid_execution_result") from None
+    if result["status"] != "captured" and (result["output_head"] or result["output_tail"]):
+        raise AgentOSProtocolError("invalid_execution_result")
+    if result["status"] == "unavailable" and (result["output_complete"] or result["output_truncated"]):
+        raise AgentOSProtocolError("invalid_execution_result")
+
+
 class _Exchange:
     """An established connection with a deadline for drip-fed partial lines.
 
@@ -290,6 +316,7 @@ class AgentOSClient:
         if "events" in value and not isinstance(value["events"], list):
             raise AgentOSProtocolError("invalid_run_events")
         _reason_code(value)
+        _execution_result(value)
         for event in value.get("events", []):
             if isinstance(event, dict):
                 _reason_code(event)

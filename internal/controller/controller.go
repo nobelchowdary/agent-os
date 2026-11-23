@@ -16,22 +16,31 @@ import (
 // Controller has one owner per database. Kubernetes Jobs use deterministic IDs;
 // uncertain creates are retried without creating a second logical execution.
 type Controller struct {
-	Store   *store.Store
-	Backend backend.Backend
-	Logger  *slog.Logger
+	Store           *store.Store
+	Backend         backend.Backend
+	Logger          *slog.Logger
+	StartupTimeout  time.Duration
+	ResultRetention time.Duration
+	SweepInterval   time.Duration
 
-	statusMu sync.RWMutex
-	status   Status
+	statusMu    sync.RWMutex
+	status      Status
+	sweepMu     sync.Mutex
+	nextSweep   time.Time
+	sweepOffset int
 }
 
 // Status describes the controller loop, not node isolation or workload health.
 // A successful pass means that every observed run was reconciled without an
 // operation error; a legitimate failed workload does not make the loop unhealthy.
 type Status struct {
-	Running             bool      `json:"running"`
-	LastCompletedAt     time.Time `json:"last_completed_at,omitzero"`
-	LastSuccessAt       time.Time `json:"last_success_at,omitzero"`
-	ConsecutiveFailures uint64    `json:"consecutive_failures"`
+	Running                bool      `json:"running"`
+	LastCompletedAt        time.Time `json:"last_completed_at,omitzero"`
+	LastSuccessAt          time.Time `json:"last_success_at,omitzero"`
+	ConsecutiveFailures    uint64    `json:"consecutive_failures"`
+	OrphanJobs             int       `json:"orphan_jobs"`
+	TerminalCleanupPending int       `json:"terminal_cleanup_pending"`
+	LastSweepAt            time.Time `json:"last_sweep_at,omitzero"`
 }
 
 // Status returns an independent snapshot and is safe during reconciliation.
@@ -160,6 +169,9 @@ func (c *Controller) Reconcile(ctx context.Context) (result error) {
 		}()
 	}
 	wg.Wait()
+	if err := c.maintain(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		failures = append(failures, &operationError{category: "maintenance_failed", cause: err})
+	}
 	if err := ctx.Err(); err != nil {
 		failures = append(failures, err)
 	}
@@ -171,13 +183,13 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 	defer cancel()
 	// A separate startup wait bounds unavailable infrastructure. Execution time
 	// is enforced by the Job's activeDeadlineSeconds, not the admission clock.
-	if (r.State == model.Queued || r.State == model.Starting || r.State == model.Activating) && time.Since(r.CreatedAt) > 5*time.Minute {
+	if (r.State == model.Queued || r.State == model.Starting || r.State == model.Activating) && time.Since(r.CreatedAt) > c.startupTimeout() {
 		ob, err := c.Backend.Observe(opctx, r.ID)
 		if err == nil && !validObservationCode(ob.State, ob.ReasonCode) {
 			return errors.New("invalid backend observation reason code")
 		}
 		if err == nil && (ob.State == model.Running || ob.State == model.Succeeded || ob.State == model.Failed || ob.State == model.Cancelling) {
-			return c.observe(r, ob)
+			return c.observe(opctx, r, ob)
 		}
 		code := model.ReasonInfraFailure
 		if err == nil && ob.ReasonCode == model.ReasonImagePullFailed {
@@ -215,7 +227,7 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 		if err != nil {
 			return err
 		}
-		if time.Since(r.CreatedAt) > 5*time.Minute && ob.State == model.Starting {
+		if time.Since(r.CreatedAt) > c.startupTimeout() && ob.State == model.Starting {
 			if !validObservationCode(ob.State, ob.ReasonCode) {
 				return errors.New("invalid backend observation reason code")
 			}
@@ -229,13 +241,32 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 			_, err := c.Store.TransitionWithCode(r.ID, []model.State{model.Running}, model.Cancelling, "startup wait exceeded", code)
 			return err
 		}
-		return c.observe(r, ob)
+		return c.observe(opctx, r, ob)
 	case model.Cancelling:
 		if !validObservationCode(model.Cancelling, r.ReasonCode) {
 			return errors.New("invalid persisted cleanup reason code")
 		}
-		if err := c.Backend.Cancel(opctx, r.ID); err != nil {
-			return err
+		// Persist a bounded snapshot before any deletion. A running process
+		// may not have a final exit code yet; logging failure must not prevent
+		// an authorized cancellation from stopping execution.
+		captureErr := c.captureResult(opctx, r, true)
+		// Give stopping its own finite budget. A log-read timeout must not
+		// leave every cleanup attempt with an already expired context.
+		cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
+		cleanupErr := c.cleanup(cleanupCtx, r)
+		cleanupCancel()
+		if captureErr != nil {
+			// Cancellation was authorized by an already durable intent. A full
+			// result store must not keep the worker running. Retain that intent
+			// and its reservation until persistence recovers; report the capture
+			// failure even when asynchronous cleanup is also still pending.
+			if cleanupErr != nil && !errors.Is(cleanupErr, backend.ErrPending) {
+				return errors.Join(captureErr, cleanupErr)
+			}
+			return captureErr
+		}
+		if cleanupErr != nil {
+			return cleanupErr
 		}
 		code := r.ReasonCode
 		if code == "" {
@@ -269,7 +300,7 @@ func (c *Controller) activate(ctx context.Context, r model.Record) error {
 	return err
 }
 
-func (c *Controller) observe(r model.Record, ob backend.Observation) error {
+func (c *Controller) observe(ctx context.Context, r model.Record, ob backend.Observation) error {
 	// Validate before the same-state/no-progress paths. Otherwise an invalid
 	// observation could either look healthy or become an ignored store CAS
 	// conflict, leaving the controller stuck without reporting the failure.
@@ -286,8 +317,149 @@ func (c *Controller) observe(r model.Record, ob backend.Observation) error {
 	if code == "" {
 		code = model.DefaultReasonCode(ob.State)
 	}
-	_, err := c.Store.TransitionWithCode(r.ID, []model.State{r.State}, ob.State, ob.Reason, code)
-	return err
+	if ob.State.Terminal() {
+		if err := c.captureResult(ctx, r, false); err != nil {
+			return err
+		}
+	}
+	stored, err := c.Store.TransitionWithCode(r.ID, []model.State{r.State}, ob.State, ob.Reason, code)
+	if err != nil {
+		return err
+	}
+	if stored.State.Terminal() {
+		return c.cleanup(ctx, stored)
+	}
+	return nil
+}
+
+func (c *Controller) startupTimeout() time.Duration {
+	if c.StartupTimeout > 0 {
+		return c.StartupTimeout
+	}
+	return 5 * time.Minute
+}
+
+func (c *Controller) captureResult(ctx context.Context, r model.Record, cancelling bool) error {
+	if r.Result != nil {
+		return nil
+	}
+	capturer, ok := c.Backend.(backend.ResultCapturer)
+	if !ok {
+		return nil
+	} // Legacy embedded/test backends may not expose results.
+	result, err := capturer.CaptureResult(ctx, r.ID)
+	if err != nil {
+		if !cancelling && !errors.Is(err, backend.ErrNotFound) {
+			return err
+		}
+		// Preserve an already observed exit status, but never expose a failed
+		// log fetch as a complete output capture.
+		result.Status = "unavailable"
+		result.OutputHead, result.OutputTail = "", ""
+		result.OutputComplete, result.OutputTruncated = false, false
+	}
+	if result.CapturedAt.IsZero() {
+		result.CapturedAt = time.Now().UTC()
+	}
+	retention := c.ResultRetention
+	if retention <= 0 {
+		retention = 24 * time.Hour
+	}
+	result.ExpiresAt = result.CapturedAt.Add(retention)
+	return c.Store.SaveResult(r.ID, result)
+}
+
+func (c *Controller) cleanup(ctx context.Context, r model.Record) error {
+	if inventory, ok := c.Backend.(backend.JobInventory); ok {
+		return inventory.Cleanup(ctx, r)
+	}
+	return c.Backend.Cancel(ctx, r.ID)
+}
+
+// maintain recovers the terminal-commit/delete crash window and late suspended
+// creations. Only store-known terminal records authorize cleanup. Unknown Jobs
+// are counted for operators and are never adopted or deleted.
+func (c *Controller) maintain(ctx context.Context) error {
+	if !c.sweepMu.TryLock() {
+		return nil
+	}
+	defer c.sweepMu.Unlock()
+	now := time.Now().UTC()
+	if now.Before(c.nextSweep) {
+		return nil
+	}
+	interval := c.SweepInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	c.nextSweep = now.Add(interval)
+	if _, err := c.Store.ExpireResults(now); err != nil {
+		return err
+	}
+	inventory, ok := c.Backend.(backend.JobInventory)
+	if !ok {
+		return nil
+	}
+	opctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	executions, err := inventory.ListExecutions(opctx)
+	if err != nil {
+		return err
+	}
+	var terminal []model.Record
+	orphans := 0
+	for _, execution := range executions {
+		r, err := c.Store.Lookup(execution.ID)
+		if errors.Is(err, store.ErrNotFound) {
+			orphans++
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if r.State.Terminal() {
+			terminal = append(terminal, r)
+		}
+	}
+	c.statusMu.Lock()
+	c.status.OrphanJobs, c.status.TerminalCleanupPending, c.status.LastSweepAt = orphans, len(terminal), now
+	c.statusMu.Unlock()
+	// Bound each sweep and rotate its starting point so one unhealthy Job
+	// cannot starve older cleanup. Active cancellations ran before this work.
+	if len(terminal) == 0 {
+		c.sweepOffset = 0
+		return nil
+	}
+	sort.Slice(terminal, func(i, j int) bool { return terminal[i].ID < terminal[j].ID })
+	count := min(16, len(terminal))
+	work := make(chan model.Record, count)
+	for i := 0; i < count; i++ {
+		work <- terminal[(c.sweepOffset+i)%len(terminal)]
+	}
+	c.sweepOffset = (c.sweepOffset + count) % len(terminal)
+	close(work)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []error
+	for i := 0; i < min(8, count); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := range work {
+				err := c.captureResult(opctx, r, false)
+				if err == nil {
+					err = inventory.Cleanup(opctx, r)
+				}
+				if err != nil && !errors.Is(err, backend.ErrPending) {
+					mu.Lock()
+					failures = append(failures, &operationError{category: "terminal_cleanup_failed", runID: r.ID, cause: err})
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return errors.Join(failures...)
 }
 
 func validObservationCode(state model.State, code model.ReasonCode) bool {

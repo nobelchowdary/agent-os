@@ -13,6 +13,8 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/nobelchowdary/agent-os/internal/backend"
 	"github.com/nobelchowdary/agent-os/internal/model"
@@ -45,10 +47,14 @@ const (
 var ErrCancelPending = backend.ErrPending
 
 type Backend struct {
-	client       kubernetes.Interface
-	namespace    string
-	runtimeClass string
-	profile      model.RuntimeProfile
+	client        kubernetes.Interface
+	namespace     string
+	runtimeClass  string
+	profile       model.RuntimeProfile
+	readyMu       sync.Mutex
+	readyUntil    time.Time
+	readyChecking chan struct{}
+	readyNow      func() time.Time
 }
 
 var _ backend.Backend = (*Backend)(nil)
@@ -100,6 +106,53 @@ func ordinaryRuntime(name string) bool {
 }
 
 func (b *Backend) Ready(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		b.readyMu.Lock()
+		if b.now().Before(b.readyUntil) {
+			b.readyMu.Unlock()
+			return nil
+		}
+		if pending := b.readyChecking; pending != nil {
+			b.readyMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-pending:
+				continue
+			}
+		}
+		b.readyChecking = make(chan struct{})
+		b.readyMu.Unlock()
+		err := b.checkPrerequisites(ctx)
+		if err == nil {
+			err = ctx.Err()
+		}
+		b.readyMu.Lock()
+		if err == nil {
+			// Declaration checks are shared by queue, submit and activation.
+			// Positive entries expire after three seconds; failures never cache.
+			b.readyUntil = b.now().Add(3 * time.Second)
+		} else {
+			b.readyUntil = time.Time{}
+		}
+		close(b.readyChecking)
+		b.readyChecking = nil
+		b.readyMu.Unlock()
+		return err
+	}
+}
+
+func (b *Backend) now() time.Time {
+	if b.readyNow != nil {
+		return b.readyNow()
+	}
+	return time.Now()
+}
+
+func (b *Backend) checkPrerequisites(ctx context.Context) error {
 	if b.client == nil {
 		return errors.New("kubernetes client is not configured; only offline rendering is available")
 	}
@@ -281,8 +334,8 @@ func (b *Backend) Submit(ctx context.Context, run model.Record) error {
 	if err != nil {
 		return err
 	}
-	// Recheck prerequisites at creation, including retries after controller
-	// restarts. This is not atomic with creation and cannot verify CNI behavior.
+	// Recheck prerequisites through the shared three-second positive cache.
+	// This is not atomic with creation and cannot verify CNI behavior.
 	if err := b.Ready(ctx); err != nil {
 		return fmt.Errorf("execution prerequisites: %w", err)
 	}
@@ -629,6 +682,20 @@ func (b *Backend) runPods(ctx context.Context, id string, jobUID types.UID) ([]c
 }
 
 func (b *Backend) Cancel(ctx context.Context, id string) error {
+	return b.cancelExecution(ctx, id, nil)
+}
+
+// Cleanup verifies the actual persisted execution shape before using the same
+// UID-fenced deletion protocol as cancellation. It never creates/adopts work.
+func (b *Backend) Cleanup(ctx context.Context, run model.Record) error {
+	want, err := b.Render(run)
+	if err != nil {
+		return err
+	}
+	return b.cancelExecution(ctx, run.ID, want)
+}
+
+func (b *Backend) cancelExecution(ctx context.Context, id string, want *batchv1.Job) error {
 	if _, err := jobName(id); err != nil {
 		return err
 	}
@@ -638,6 +705,9 @@ func (b *Backend) Cancel(ctx context.Context, id string) error {
 	}
 	var uid types.UID
 	if job != nil {
+		if want != nil && (job.Annotations[SpecHashAnnotation] != want.Annotations[SpecHashAnnotation] || !sameExecution(job, want)) {
+			return errors.New("refusing cleanup of an execution that differs from its durable record")
+		}
 		uid = job.UID
 		// Validate associated objects before performing destructive operations.
 		if _, err := b.runPods(ctx, id, uid); err != nil {

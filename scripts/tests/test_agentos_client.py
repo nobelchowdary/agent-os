@@ -166,6 +166,39 @@ class ClientTests(unittest.TestCase):
             streams = [r for r in server.requests if "/events?" in r["path"]]
             self.assertEqual({k.lower(): v for k, v in streams[0]["headers"].items()}["agentos-events-version"], "3")
 
+    def test_execution_results_preserve_exit_status_and_bounded_head_tail(self):
+        captured = {"exit_code": 3, "output_head": "hello\n", "output_tail": "traceback\n", "output_truncated": True,
+                    "output_complete": True, "status": "captured", "captured_at": AT, "expires_at": "2026-11-22T00:00:00Z"}
+        cases = [captured, dict(captured, output_complete=False),
+                 dict(captured, status="expired", output_head="", output_tail=""),
+                 dict(captured, status="unavailable", output_head="", output_tail="", output_complete=False, output_truncated=False)]
+        for result in cases:
+            value = dict(record("failed"), result=result)
+            with self.subTest(status=result["status"]), serving(lambda h: h.json(value)) as server:
+                self.assertEqual(self.client(server).get_run(RUN)["result"], result)
+        invalid = [None, [], {}, dict(captured, status=[]), dict(captured, exit_code=True), dict(captured, exit_code=2**31),
+                   dict(captured, output_head="x" * 65536), dict(captured, output_head="\ud800"),
+                   dict(captured, output_complete="true"), dict(captured, output_tail=None),
+                   dict(captured, captured_at="no date"), dict(captured, captured_at=2),
+                   dict(captured, expires_at=AT), dict(captured, expires_at="2026-11-22"),
+                   dict(captured, status="expired"), dict(captured, status="unavailable"),
+                   dict(captured, status="unavailable", output_head="", output_tail="", output_complete=True)]
+        for result in invalid:
+            with self.subTest(invalid_type=type(result).__name__), serving(lambda h: h.json(dict(record("failed"), result=result))) as server:
+                with self.assertRaises(sdk.AgentOSProtocolError) as caught:
+                    self.client(server).get_run(RUN)
+                self.assertNotIn(TOKEN, str(caught.exception))
+                self.assertEqual(len(server.requests), 1)
+
+    def test_expired_retained_logs_fail_without_retry(self):
+        with serving(lambda h: h.json({"code": "result_expired", "error": TOKEN}, 410)) as server:
+            with self.assertRaises(sdk.AgentOSError) as caught:
+                self.client(server).logs(RUN)
+            self.assertEqual(caught.exception.status_code, 410)
+            self.assertFalse(caught.exception.retryable)
+            self.assertNotIn(TOKEN, str(caught.exception))
+            self.assertEqual(len(server.requests), 1)
+
     def test_coded_json_records_and_legacy_omissions_remain_compatible(self):
         cases = [(state, None) for state in sorted(sdk.STATES)]
         cases += [("succeeded", "completed"), ("cancelled", "cancelled"), ("cancelling", "cancelled")]

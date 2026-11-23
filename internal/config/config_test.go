@@ -3,9 +3,55 @@ package config
 import (
 	"encoding/json"
 	"github.com/nobelchowdary/agent-os/internal/model"
+	"math"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestExecutionOperationsSettingsAreBoundedAndDefaulted(t *testing.T) {
+	c, err := Load("../../config/example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.StartupTimeoutSeconds, c.ResultRetentionSeconds, c.KubernetesQPS, c.KubernetesBurst = 0, 0, 0, 0
+	qps, burst := c.ClientLimits()
+	if err := c.Validate(); err != nil || c.StartupTimeout() != 5*time.Minute || c.ResultRetention() != 24*time.Hour || qps != 50 || burst != 100 {
+		t.Fatal("legacy operational defaults changed", err)
+	}
+	c.StartupTimeoutSeconds, c.ResultRetentionSeconds, c.KubernetesQPS, c.KubernetesBurst = 2, 3, 70, 120
+	qps, burst = c.ClientLimits()
+	if err := c.Validate(); err != nil || c.StartupTimeout() != 2*time.Second || c.ResultRetention() != 3*time.Second || qps != 70 || burst != 120 {
+		t.Fatal("administrator limits ignored", err)
+	}
+	for _, mutate := range []func(*Config){
+		func(c *Config) { c.StartupTimeoutSeconds = -1 }, func(c *Config) { c.StartupTimeoutSeconds = 86401 },
+		func(c *Config) { c.ResultRetentionSeconds = -1 }, func(c *Config) { c.ResultRetentionSeconds = 30*86400 + 1 },
+		func(c *Config) { c.KubernetesQPS = -1 }, func(c *Config) { c.KubernetesQPS = .5 }, func(c *Config) { c.KubernetesQPS = 1001 },
+		func(c *Config) { c.KubernetesQPS = float32(math.NaN()) }, func(c *Config) { c.KubernetesQPS = float32(math.Inf(1)) },
+		func(c *Config) { c.KubernetesBurst = -1 }, func(c *Config) { c.KubernetesBurst = 2001 },
+	} {
+		bad := c
+		mutate(&bad)
+		if bad.Validate() == nil {
+			t.Fatal("accepted invalid operational bound")
+		}
+	}
+	before, err := c.Resolve(model.CreateRequest{Template: "python"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.StartupTimeoutSeconds, c.ResultRetentionSeconds, c.KubernetesQPS, c.KubernetesBurst = 10, 20, 100, 200
+	after, err := c.Resolve(model.CreateRequest{Template: "python"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, _ := json.Marshal(before)
+	two, _ := json.Marshal(after)
+	if string(one) != string(two) {
+		t.Fatal("operator tuning changed resolved specification/idempotency fingerprint")
+	}
+}
 
 func TestExplicitRuntimeProfilesAndLegacyCompatibility(t *testing.T) {
 	legacy, err := Load("../../config/example.json")

@@ -60,6 +60,9 @@ func TestEpochPersistsAndGetWithEpochPreservesTenantScope(t *testing.T) {
 func TestSchemaOneMigrationAddsEpochWithoutRewritingData(t *testing.T) {
 	path, _ := closedStoreFixture(t, false)
 	mutateFile(t, path, func(tx *bolt.Tx) error {
+		if err := tx.DeleteBucket(resultsBucket); err != nil {
+			return err
+		}
 		meta := tx.Bucket(metadataBucket)
 		version := make([]byte, 8)
 		binary.BigEndian.PutUint64(version, 1)
@@ -222,6 +225,9 @@ func TestRestoreLegacyVersionsCreatesUniqueEpochsWithoutChangingInput(t *testing
 		t.Run(string(rune('0'+version)), func(t *testing.T) {
 			source, _ := closedStoreFixture(t, false)
 			mutateFile(t, source, func(tx *bolt.Tx) error {
+				if err := tx.DeleteBucket(resultsBucket); err != nil {
+					return err
+				}
 				if version == 0 {
 					return tx.DeleteBucket(metadataBucket)
 				}

@@ -24,7 +24,7 @@ var (
 	epochKey       = []byte("store_epoch")
 )
 
-const currentSchemaVersion uint64 = 2
+const currentSchemaVersion uint64 = 3
 
 var dataBuckets = [][]byte{recordsBucket, tenantIndexBucket, activeBucket, tenantActiveBucket, idempotencyBucket}
 
@@ -36,8 +36,35 @@ func schemaVersion(tx *bolt.Tx) (uint64, error) {
 			return 0, fmt.Errorf("%w: missing data bucket", ErrSchema)
 		}
 	}
+	var version uint64
+	meta := tx.Bucket(metadataBucket)
+	if meta != nil {
+		value := meta.Get(schemaKey)
+		if len(value) != 8 {
+			return 0, fmt.Errorf("%w: malformed version", ErrSchema)
+		}
+		version = binary.BigEndian.Uint64(value)
+		if version > currentSchemaVersion {
+			return 0, fmt.Errorf("%w: newer version", ErrSchema)
+		}
+		if version >= 2 && !validEpoch(string(meta.Get(epochKey))) {
+			return 0, fmt.Errorf("%w: malformed store epoch", ErrSchema)
+		}
+		if err := meta.ForEach(func(key, value []byte) error {
+			known := bytes.Equal(key, schemaKey) || version >= 2 && bytes.Equal(key, epochKey)
+			if !known || value == nil {
+				return fmt.Errorf("%w: unknown metadata", ErrSchema)
+			}
+			return nil
+		}); err != nil {
+			return 0, err
+		}
+	}
+	if version >= 3 && tx.Bucket(resultsBucket) == nil {
+		return 0, fmt.Errorf("%w: missing results bucket", ErrSchema)
+	}
 	if err := tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
-		if bytes.Equal(name, metadataBucket) {
+		if bytes.Equal(name, metadataBucket) || version >= 3 && bytes.Equal(name, resultsBucket) {
 			return nil
 		}
 		for _, known := range dataBuckets {
@@ -46,30 +73,6 @@ func schemaVersion(tx *bolt.Tx) (uint64, error) {
 			}
 		}
 		return fmt.Errorf("%w: unknown bucket", ErrSchema)
-	}); err != nil {
-		return 0, err
-	}
-	meta := tx.Bucket(metadataBucket)
-	if meta == nil {
-		return 0, nil
-	}
-	value := meta.Get(schemaKey)
-	if len(value) != 8 {
-		return 0, fmt.Errorf("%w: malformed version", ErrSchema)
-	}
-	version := binary.BigEndian.Uint64(value)
-	if version > currentSchemaVersion {
-		return 0, fmt.Errorf("%w: newer version", ErrSchema)
-	}
-	if version == currentSchemaVersion && !validEpoch(string(meta.Get(epochKey))) {
-		return 0, fmt.Errorf("%w: malformed store epoch", ErrSchema)
-	}
-	if err := meta.ForEach(func(key, value []byte) error {
-		known := bytes.Equal(key, schemaKey) || version == currentSchemaVersion && bytes.Equal(key, epochKey)
-		if !known || value == nil {
-			return fmt.Errorf("%w: unknown metadata", ErrSchema)
-		}
-		return nil
 	}); err != nil {
 		return 0, err
 	}
@@ -104,9 +107,13 @@ func initializeSchema(db *bolt.DB, fresh bool) error {
 	if !empty && version == currentSchemaVersion {
 		return nil
 	}
-	epoch, err := randomEpoch("")
-	if err != nil {
-		return err
+	var epoch string
+	if version < 2 {
+		var err error
+		epoch, err = randomEpoch("")
+		if err != nil {
+			return err
+		}
 	}
 	// One transaction initializes a fresh database or adds version metadata to
 	// an intact legacy store. No run/spec/event/index value is rewritten.
@@ -120,6 +127,9 @@ func initializeSchema(db *bolt.DB, fresh bool) error {
 		} else if _, err := schemaVersion(tx); err != nil {
 			return err
 		}
+		if _, err := tx.CreateBucketIfNotExists(resultsBucket); err != nil {
+			return err
+		}
 		meta, err := tx.CreateBucketIfNotExists(metadataBucket)
 		if err != nil {
 			return err
@@ -128,6 +138,10 @@ func initializeSchema(db *bolt.DB, fresh bool) error {
 		binary.BigEndian.PutUint64(value, currentSchemaVersion)
 		if err := meta.Put(schemaKey, value); err != nil {
 			return err
+		}
+		// Preserve existing history and cursors on a schema-only upgrade.
+		if version >= 2 {
+			return nil
 		}
 		return meta.Put(epochKey, []byte(epoch))
 	})
@@ -163,7 +177,7 @@ func readEpoch(tx *bolt.Tx) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if version != currentSchemaVersion {
+	if version < 2 {
 		return "", ErrSchema
 	}
 	return string(tx.Bucket(metadataBucket).Get(epochKey)), nil

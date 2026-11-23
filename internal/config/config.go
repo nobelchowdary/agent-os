@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
+	"time"
 
 	"github.com/nobelchowdary/agent-os/internal/model"
 )
@@ -31,13 +33,17 @@ type Template struct {
 }
 
 type Config struct {
-	Namespace          string                `json:"namespace"`
-	RuntimeClass       string                `json:"runtime_class,omitempty"`
-	RuntimeProfile     *model.RuntimeProfile `json:"runtime_profile,omitempty"`
-	MaxActivePerTenant int                   `json:"max_active_per_tenant"`
-	MaxActiveTotal     int                   `json:"max_active_total"`
-	Tenants            []Tenant              `json:"tenants"`
-	Templates          map[string]Template   `json:"templates"`
+	Namespace              string                `json:"namespace"`
+	RuntimeClass           string                `json:"runtime_class,omitempty"`
+	RuntimeProfile         *model.RuntimeProfile `json:"runtime_profile,omitempty"`
+	MaxActivePerTenant     int                   `json:"max_active_per_tenant"`
+	MaxActiveTotal         int                   `json:"max_active_total"`
+	StartupTimeoutSeconds  int64                 `json:"startup_timeout_seconds,omitempty"`
+	ResultRetentionSeconds int64                 `json:"result_retention_seconds,omitempty"`
+	KubernetesQPS          float32               `json:"kubernetes_qps,omitempty"`
+	KubernetesBurst        int                   `json:"kubernetes_burst,omitempty"`
+	Tenants                []Tenant              `json:"tenants"`
+	Templates              map[string]Template   `json:"templates"`
 }
 
 var name = regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$|^[a-z]$`)
@@ -63,6 +69,15 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.StartupTimeoutSeconds < 0 || c.StartupTimeoutSeconds > 86400 || c.ResultRetentionSeconds < 0 || c.ResultRetentionSeconds > 30*86400 {
+		return errors.New("startup timeout must be 1–86400 seconds and result retention 1–2592000 seconds (zero selects defaults)")
+	}
+	if math.IsNaN(float64(c.KubernetesQPS)) || math.IsInf(float64(c.KubernetesQPS), 0) || c.KubernetesQPS < 0 || c.KubernetesQPS > 1000 || c.KubernetesBurst < 0 || c.KubernetesBurst > 2000 {
+		return errors.New("Kubernetes client QPS must be 1–1000 and burst 1–2000 (zero selects defaults)")
+	}
+	if c.KubernetesQPS > 0 && c.KubernetesQPS < 1 {
+		return errors.New("Kubernetes client QPS must be at least 1")
+	}
 	if !name.MatchString(c.Namespace) {
 		return errors.New("explicit workload namespace required")
 	}
@@ -101,6 +116,33 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (c Config) StartupTimeout() time.Duration {
+	seconds := c.StartupTimeoutSeconds
+	if seconds == 0 {
+		seconds = 300
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (c Config) ResultRetention() time.Duration {
+	seconds := c.ResultRetentionSeconds
+	if seconds == 0 {
+		seconds = 86400
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (c Config) ClientLimits() (float32, int) {
+	qps, burst := c.KubernetesQPS, c.KubernetesBurst
+	if qps == 0 {
+		qps = 50
+	}
+	if burst == 0 {
+		burst = 100
+	}
+	return qps, burst
 }
 
 // ResolvedRuntimeProfile validates the complete administrator-owned runtime

@@ -141,14 +141,30 @@ type Event struct {
 	ReasonCode ReasonCode `json:"reason_code,omitempty"`
 }
 
+// ExecutionResult is an administrator-captured attachment, never caller input.
+// Output combines stdout/stderr. A tail is the last scanned bytes; it is the
+// final tail only when OutputComplete is true. Expiry removes output while
+// retaining observed exit status and capture metadata.
+type ExecutionResult struct {
+	ExitCode        *int32    `json:"exit_code,omitempty"`
+	OutputHead      string    `json:"output_head"`
+	OutputTail      string    `json:"output_tail"`
+	OutputTruncated bool      `json:"output_truncated"`
+	OutputComplete  bool      `json:"output_complete"`
+	Status          string    `json:"status"`
+	CapturedAt      time.Time `json:"captured_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+}
+
 type Record struct {
-	ID         string     `json:"id"`
-	TenantID   string     `json:"tenant_id"`
-	Spec       Spec       `json:"spec"`
-	State      State      `json:"state"`
-	Reason     string     `json:"reason,omitempty"`
-	ReasonCode ReasonCode `json:"reason_code,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
-	Events     []Event    `json:"events"`
+	ID         string           `json:"id"`
+	TenantID   string           `json:"tenant_id"`
+	Spec       Spec             `json:"spec"`
+	State      State            `json:"state"`
+	Reason     string           `json:"reason,omitempty"`
+	ReasonCode ReasonCode       `json:"reason_code,omitempty"`
+	CreatedAt  time.Time        `json:"created_at"`
+	UpdatedAt  time.Time        `json:"updated_at"`
+	Events     []Event          `json:"events"`
+	Result     *ExecutionResult `json:"result,omitempty"`
 }

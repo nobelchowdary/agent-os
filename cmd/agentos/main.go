@@ -73,6 +73,9 @@ func run() error {
 			return err
 		}
 		rc.Timeout = 5 * time.Second
+		// Explicit shared clientset limits avoid client-go's small per-group
+		// defaults while retaining a bounded administrator-selected request rate.
+		rc.QPS, rc.Burst = cfg.ClientLimits()
 		client, err = kubernetes.NewForConfig(rc)
 		if err != nil {
 			return err
@@ -91,7 +94,7 @@ func run() error {
 	defer stop()
 	done := make(chan struct{})
 	if !*preview {
-		c := &controller.Controller{Store: db, Backend: b, Logger: slog.Default()}
+		c := &controller.Controller{Store: db, Backend: b, Logger: slog.Default(), StartupTimeout: cfg.StartupTimeout(), ResultRetention: cfg.ResultRetention()}
 		s.ControllerStatus = c.Status
 		go func() {
 			defer close(done)

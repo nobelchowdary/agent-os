@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nobelchowdary/agent-os/internal/backend"
 	"github.com/nobelchowdary/agent-os/internal/model"
@@ -310,17 +311,20 @@ func TestSubmitIsIdempotentAndRejectsConflictingSpecifications(t *testing.T) {
 	}
 }
 
-func TestSubmitRechecksPrerequisitesImmediatelyBeforeCreation(t *testing.T) {
+func TestSubmitRechecksPrerequisitesAfterPositiveCacheExpires(t *testing.T) {
 	ctx := context.Background()
 	b, client := newTestBackend(t, fixtures()...)
+	now := time.Now()
+	b.readyNow = func() time.Time { return now }
 	if err := b.Ready(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// The controller's earlier successful Ready must not authorize a later
-	// create after an installation prerequisite was removed.
+	// The earlier declaration check must not authorize creation once its
+	// bounded positive cache has expired.
 	if err := client.NetworkingV1().NetworkPolicies("work").Delete(ctx, DenyAllPolicy, metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	now = now.Add(4 * time.Second)
 	client.ClearActions()
 	if err := b.Submit(ctx, fixtureRun()); err == nil {
 		t.Fatal("submitted without default-deny prerequisite")
@@ -480,15 +484,18 @@ func TestAmbiguousActivationRetriesWithoutCreatingOrReactivating(t *testing.T) {
 	}
 }
 
-func TestActivateRechecksDefaultDenyBeforePatch(t *testing.T) {
+func TestActivateRechecksDefaultDenyAfterPositiveCacheExpires(t *testing.T) {
 	ctx := context.Background()
 	b, client := newTestBackend(t, fixtures()...)
+	now := time.Now()
+	b.readyNow = func() time.Time { return now }
 	if err := b.Submit(ctx, fixtureRun()); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.NetworkingV1().NetworkPolicies("work").Delete(ctx, DenyAllPolicy, metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	now = now.Add(4 * time.Second)
 	client.ClearActions()
 	if err := b.Activate(ctx, fixtureRun()); err == nil {
 		t.Fatal("activated after prerequisite removal")

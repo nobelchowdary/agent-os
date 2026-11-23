@@ -11,7 +11,7 @@ This first alpha provides a runnable execution API and constrained Python/Node e
 - Administrator-owned environments with digest-pinned images and fixed CPU, RAM, scratch-space and execution-time settings.
 - Kubernetes Jobs with an administrator-selected gVisor or AWS Nitro isolated profile, non-root processes, read-only root filesystems, dropped capabilities and no workload Kubernetes token. Runtime profiles remain unqualified on live nodes.
 - Bearer-token authentication with tenant-scoped create, list, status, bounded logs and cancellation.
-- Durable run records and lifecycle events using transactional embedded storage.
+- Durable run records, lifecycle events and bounded exit/output results using transactional embedded storage.
 - Structured outcome/cleanup codes, versioned metadata storage and drained offline check/backup/restore commands.
 - Restore-aware live lifecycle events, epoch-bound tenant-scoped history pagination and operational status.
 - Controller wakeups on committed admission/cancellation, failure/recovery health and graceful stream shutdown.
@@ -43,7 +43,7 @@ Submit this shape to `POST /v1/runs` in cluster execution mode. Image, resource 
 
 ## Current boundaries
 
-The API runs as one process/replica with a private bbolt database. Workload files and logs are not durably archived. Failed application work is not automatically retried. Cancellation is asynchronous; disappearing Kubernetes objects cannot prove a partitioned worker physically stopped. Finished Jobs and any late suspended creations need operator housekeeping.
+The API runs as one process/replica with a private bbolt database. Workload files are ephemeral; bounded output snapshots have administrator-controlled retention. Failed application work is not automatically retried. Cancellation is asynchronous; disappearing Kubernetes objects cannot prove a partitioned worker physically stopped. Finished Jobs and late creations for known terminal runs are cleaned up after result persistence; unknown labeled Jobs are reported for operator review.
 
 Workload networking is denied by default; the Nitro profile also requests a NIC-free guest and uses memory-backed scratch. Its trusted-parent/vsock and memory limits require separate qualification. A model/tool gateway, provider-spend enforcement, durable workspaces, integrated checkpoint recovery and Agent OS warm pools are future work. Evaluation tooling exists; no token savings, density advantage or live-cluster compatibility results are claimed. The local suite verifies contracts, persistence, object behavior and evidence handling with fake clients; actual node isolation remains a separate acceptance gate.
 
@@ -52,8 +52,9 @@ Workload networking is denied by default; the Nitro profile also requests a NIC-
 - [Getting started](docs/GETTING_STARTED.md): preview, cluster prerequisites, API examples and operational limits.
 - [Launch and live API](docs/LIVE_API.md): agent-harness integration, event replay, health and pagination; [Python client](sdk/python/README.md).
 - [API contract](docs/API_CONTRACT.md): embedded OpenAPI, stable error codes and request compatibility.
+- [Results and cleanup](docs/RESULTS_AND_CLEANUP.md): retained exit/output data, retention limits, terminal sweeps and administrator request/startup settings.
 - [Outcome codes](docs/OUTCOME_CODES.md) and [offline storage recovery](docs/STORAGE_RECOVERY.md): cause evidence, legacy compatibility and maintenance limits.
-- [November 22 review bundle](docs/reviews/2026-11-22/README.md): exact historical patch/report, requirement-to-test matrix, restore contract and workbook findings.
+- [Real kind/gVisor checks](docs/KIND_TESTS.md): repeatable kubelet lifecycle and failure campaign; inspect the actual CI outcome.
 - [Robustness work](docs/robustness/README.md): the supplied plan, audit of all 70 requirements and phase 0 gates.
 - [Architecture decision](docs/decisions/0001-initial-execution-slice.md): the first backend and its scope.
 - [Roadmap](docs/ROADMAP.md): capability gates driven by workload evidence and customer needs.

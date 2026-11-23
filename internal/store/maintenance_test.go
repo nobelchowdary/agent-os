@@ -124,6 +124,9 @@ func rawDataValues(t *testing.T, path string) map[string][]byte {
 func TestLegacySchemaMigrationPreservesEveryDataValue(t *testing.T) {
 	path, expected := closedStoreFixture(t, false)
 	mutateFile(t, path, func(tx *bolt.Tx) error {
+		if err := tx.DeleteBucket(resultsBucket); err != nil {
+			return err
+		}
 		if err := tx.DeleteBucket(metadataBucket); err != nil {
 			return err
 		}
@@ -367,6 +370,9 @@ func TestAcceptedUnsyncedFreelistRestoresNormalDurableWritePolicy(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
+		if err := tx.DeleteBucket(resultsBucket); err != nil {
+			return err
+		}
 		meta := tx.Bucket(metadataBucket)
 		if err := meta.Delete(epochKey); err != nil {
 			return err

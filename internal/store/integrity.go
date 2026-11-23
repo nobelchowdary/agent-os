@@ -27,7 +27,7 @@ func validIdentity(value string) bool {
 }
 
 func validateHistory(record model.Record) error {
-	if !validIdentity(record.ID) || !validIdentity(record.TenantID) || !record.State.Valid() ||
+	if record.Result != nil || !validIdentity(record.ID) || !validIdentity(record.TenantID) || !record.State.Valid() ||
 		record.CreatedAt.IsZero() || record.UpdatedAt.Before(record.CreatedAt) ||
 		len(record.Events) == 0 {
 		return ErrIntegrity
@@ -78,7 +78,7 @@ func validateSnapshot(tx *bolt.Tx) (BackupInfo, error) {
 		return info, err
 	}
 	info.SchemaVersion = version
-	if version == currentSchemaVersion {
+	if version >= 2 {
 		info.StoreEpoch = string(tx.Bucket(metadataBucket).Get(epochKey))
 	}
 	records := tx.Bucket(recordsBucket)
@@ -171,6 +171,21 @@ func validateSnapshot(tx *bolt.Tx) (BackupInfo, error) {
 	}); err != nil {
 		return info, err
 	}
+	if version >= 3 {
+		if err := tx.Bucket(resultsBucket).ForEach(func(id, value []byte) error {
+			var result model.ExecutionResult
+			if value == nil || !validIdentity(string(id)) || decodeSnapshotJSON(value, &result) != nil || !validResult(result, true) {
+				return ErrIntegrity
+			}
+			if _, err := snapshotRecord(records, id); err != nil {
+				return ErrIntegrity
+			}
+			return nil
+		}); err != nil {
+			return info, err
+		}
+	}
+
 	return info, nil
 }
 

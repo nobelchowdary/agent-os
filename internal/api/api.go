@@ -381,6 +381,43 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, tenant string) {
 		return
 	}
 	const limit int64 = 64 * 1024
+	if v.Result != nil {
+		result := v.Result
+		if result.Status == "expired" {
+			problem(w, 410, "result_expired", "retained output expired")
+			return
+		}
+		if result.Status == "unavailable" {
+			problem(w, 404, "logs_unavailable", "execution output was unavailable at capture")
+			return
+		}
+		logs := result.OutputHead
+		if result.OutputTail != "" {
+			separator := ""
+			if result.OutputTruncated {
+				separator = "\n...[output omitted]...\n"
+			}
+			tail := result.OutputTail
+			headLimit := int(limit) - len(separator) - len(tail)
+			if headLimit < 0 {
+				tail = tail[len(tail)-(int(limit)-len(separator)):]
+				for !utf8.ValidString(tail) {
+					tail = tail[1:]
+				}
+				headLimit = 0
+			}
+			if len(logs) > headLimit {
+				logs = logs[:headLimit]
+				for !utf8.ValidString(logs) {
+					logs = logs[:len(logs)-1]
+				}
+			}
+			logs += separator + tail
+		}
+		write(w, 200, map[string]any{"run_id": v.ID, "logs": logs, "limit_bytes": limit,
+			"source": "retained", "output_complete": result.OutputComplete, "output_truncated": result.OutputTruncated, "exit_code": result.ExitCode})
+		return
+	}
 	logs, err := s.Backend.Logs(r.Context(), v.ID, limit)
 	if errors.Is(err, backend.ErrNotFound) {
 		problem(w, 404, "logs_unavailable", "execution logs unavailable")

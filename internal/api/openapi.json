@@ -503,7 +503,7 @@
     "/v1/runs/{id}/logs": {
       "get": {
         "operationId": "logs",
-        "description": "",
+        "description": "Retained bounded head/tail after capture; backend live logs before capture. Expired retained output returns410 result_expired without falling back to Kubernetes; unavailable capture returns404. GET run retains captured exit_code and expiry metadata.",
         "responses": {
           "200": {
             "description": "Successful response",
@@ -537,6 +537,9 @@
             "$ref": "#/components/responses/Error"
           },
           "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
             "$ref": "#/components/responses/Error"
           }
         },
@@ -740,7 +743,8 @@
               "streaming_unavailable",
               "unauthenticated",
               "unsupported_media_type",
-              "store_epoch_mismatch"
+              "store_epoch_mismatch",
+              "result_expired"
             ]
           },
           "error": {
@@ -1005,6 +1009,9 @@
           },
           "reason_code": {
             "$ref": "#/components/schemas/ReasonCode"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ExecutionResult"
           }
         },
         "required": [
@@ -1036,7 +1043,8 @@
           "runs",
           "next_cursor"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Summaries omit result payloads to bound page size; fetch an individual run to obtain its result."
       },
       "Logs": {
         "type": "object",
@@ -1051,6 +1059,26 @@
           "limit_bytes": {
             "type": "integer",
             "const": 65536
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "retained"
+            ]
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": -2147483648,
+            "maximum": 2147483647
+          },
+          "output_complete": {
+            "type": "boolean"
+          },
+          "output_truncated": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -1125,7 +1153,7 @@
             "type": "integer"
           },
           "controller": {
-            "type": "object"
+            "$ref": "#/components/schemas/ControllerStatus"
           },
           "controller_healthy": {
             "type": "boolean"
@@ -1193,6 +1221,100 @@
           "unknown"
         ],
         "description": "Structured outcome/cleanup-intent code. Optional for legacy records. policy_denied and budget_exceeded are reserved; no current gateway/budget producer exists. unknown means observed facts did not establish a cause."
+      },
+      "ExecutionResult": {
+        "type": "object",
+        "description": "First durable backend capture, separate from immutable lifecycle history. stdout/stderr are combined. OutputHead+OutputTail total at most65536 UTF-8 bytes. Tail is final only when output_complete=true; otherwise last scanned bytes. Retention expiry suppresses output immediately; exit status/metadata stay. A missing result is legacy/not-yet-captured. No exactly-once task guarantee.",
+        "properties": {
+          "exit_code": {
+            "type": "integer",
+            "minimum": -2147483648,
+            "maximum": 2147483647,
+            "description": "Omitted if no authoritative agent termination status was captured."
+          },
+          "output_head": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "output_tail": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "output_truncated": {
+            "type": "boolean"
+          },
+          "output_complete": {
+            "type": "boolean",
+            "description": "False if the process was still live or output scan reached its bound/time limit."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "captured",
+              "unavailable",
+              "expired"
+            ]
+          },
+          "captured_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "output_head",
+          "output_tail",
+          "output_truncated",
+          "output_complete",
+          "status",
+          "captured_at",
+          "expires_at"
+        ],
+        "additionalProperties": false
+      },
+      "ControllerStatus": {
+        "type": "object",
+        "description": "Controller loop and global inventory counters only; no foreign run IDs or specifications. Counts are from the last successful sweep and do not prove physical worker stop.",
+        "properties": {
+          "running": {
+            "type": "boolean"
+          },
+          "last_completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_success_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "consecutive_failures": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "orphan_jobs": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Global count of managed-label Jobs absent from store; never adopted or deleted automatically."
+          },
+          "terminal_cleanup_pending": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_sweep_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "running",
+          "consecutive_failures",
+          "orphan_jobs",
+          "terminal_cleanup_pending"
+        ],
+        "additionalProperties": false
       }
     },
     "responses": {

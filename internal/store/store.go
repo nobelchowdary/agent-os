@@ -118,6 +118,9 @@ func (s *Store) Admit(record model.Record, idempotencyKey string, maxTenantActiv
 	if len(idempotencyKey) > maxKeyBytes {
 		return model.Record{}, false, errors.New("idempotency key exceeds 4096 bytes")
 	}
+	if record.Result != nil {
+		return model.Record{}, false, errors.New("caller cannot supply an execution result")
+	}
 	if record.State != "" && record.State != model.Queued {
 		return model.Record{}, false, fmt.Errorf("%w: new runs must be queued", ErrConflict)
 	}
@@ -148,8 +151,8 @@ func (s *Store) Admit(record model.Record, idempotencyKey string, maxTenantActiv
 				if original.TenantID != record.TenantID {
 					return errors.New("corrupt idempotency tenant index")
 				}
-				result = original
-				return nil
+				result, err = projectResult(tx, original)
+				return err
 			}
 		}
 		if records.Get([]byte(record.ID)) != nil {
@@ -251,8 +254,8 @@ func (s *Store) GetWithEpoch(tenant, id string) (model.Record, string, error) {
 		if err != nil {
 			return err
 		}
-		result = record
-		return nil
+		result, err = projectResult(tx, record)
+		return err
 	})
 	if err != nil {
 		return model.Record{}, "", err
@@ -342,6 +345,10 @@ func (s *Store) Active() ([]model.Record, error) {
 			if record.State.Terminal() || !bytes.Equal(tenant, []byte(record.TenantID)) {
 				return errors.New("corrupt active run index")
 			}
+			record, err = projectResult(tx, record)
+			if err != nil {
+				return err
+			}
 			result = append(result, record)
 			return nil
 		})
@@ -388,8 +395,8 @@ func (s *Store) TransitionWithCode(id string, allowed []model.State, to model.St
 			return fmt.Errorf("%w: transition %s to %s is not allowed", ErrConflict, record.State, to)
 		}
 		if record.State == to {
-			result = record
-			return nil
+			result, err = projectResult(tx, record)
+			return err
 		}
 		if !validReasonCode(to, code, false) {
 			return fmt.Errorf("%w: reason code does not match target state", ErrConflict)
@@ -422,9 +429,9 @@ func (s *Store) TransitionWithCode(id string, allowed []model.State, to model.St
 				return err
 			}
 		}
-		result = record
-		changed = true
-		return nil
+		result, err = projectResult(tx, record)
+		changed = err == nil
+		return err
 	})
 	if err == nil && changed {
 		s.publishChanged()
