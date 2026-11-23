@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / '.local' / 'kind-ci'
@@ -256,8 +257,13 @@ class ObjectWatch:
         self.seen, self.errors, self.lock = {}, [], threading.Lock()
         listing = cluster.obj(kind)
         version = listing['metadata']['resourceVersion']
-        self.process = subprocess.Popen(cluster.k + ['get', kind, '-n', NAMESPACE, '--watch-only', '--output-watch-events',
-            '--resource-version=' + version, '--request-timeout=0', '-o', 'json'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        # kubectl get has no --resource-version flag. Its raw transport can
+        # request the API watch directly from the LIST snapshot without a gap.
+        prefix = '/apis/batch/v1' if kind == 'jobs' else '/api/v1'
+        path = prefix + '/namespaces/' + NAMESPACE + '/' + kind + '?' + urlencode({
+            'watch': 'true', 'resourceVersion': version, 'allowWatchBookmarks': 'true', 'timeoutSeconds': 3600})
+        self.process = subprocess.Popen(cluster.k + ['get', '--raw', path, '--request-timeout=0'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.thread = threading.Thread(target=self.read, daemon=True)
         self.thread.start()
 

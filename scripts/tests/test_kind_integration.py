@@ -24,6 +24,29 @@ campaign = module('kind_integration')
 
 
 class KindSafetyTests(unittest.TestCase):
+    def test_watch_uses_list_snapshot_in_raw_api_request_and_counts_uids(self):
+        import json
+        from unittest.mock import Mock
+        from urllib.parse import urlsplit, parse_qs
+        events = [
+            {'type': 'BOOKMARK', 'object': {'metadata': {'resourceVersion': '124'}}},
+            *[{'type': 'ADDED', 'object': {'metadata': {'uid': uid, 'labels': {campaign.RUN_LABEL: 'run'}}}}
+              for uid in ('first', 'first', 'second')]]
+        process = Mock(stdout=io.BytesIO(('\n'.join(json.dumps(value) for value in events)).encode()))
+        cluster = Mock(k=['kubectl', '--context', campaign.CONTEXT])
+        cluster.obj.return_value = {'metadata': {'resourceVersion': '123'}}
+        for kind, prefix in [('jobs', '/apis/batch/v1'), ('pods', '/api/v1')]:
+            process.stdout.seek(0)
+            with patch.object(campaign.subprocess, 'Popen', return_value=process) as launch, patch.object(campaign.threading, 'Thread'):
+                watch = campaign.ObjectWatch(cluster, kind)
+            args = launch.call_args.args[0]
+            url = urlsplit(args[args.index('--raw') + 1])
+            self.assertEqual(url.path, prefix + '/namespaces/' + campaign.NAMESPACE + '/' + kind)
+            self.assertEqual(parse_qs(url.query)['resourceVersion'], ['123'])
+            self.assertEqual(parse_qs(url.query)['watch'], ['true'])
+            watch.read()
+            self.assertEqual(watch.seen['run'], {'first', 'second'})
+
     def test_runsc_patch_preserves_kind_v2_systemd_runtime_configuration(self):
         # kind v0.33's node image keeps a v2 config even with containerd 2.x.
         # A separate v3 runtimes table shadows the entire v2 runtime map during
