@@ -1,0 +1,47 @@
+name: kind gVisor lifecycle
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kind-gvisor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build API image
+        run: docker build --tag agent-os:kind-ci .
+      - name: Create disposable kind cluster with verified gVisor
+        run: python3 scripts/kind_cluster.py --execute
+      - name: Preload API and pinned workload images
+        run: |
+          docker pull python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
+          .local/kind-ci/bin/kind load docker-image --name agentos-ci agent-os:kind-ci python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
+      - name: Run actual kubelet lifecycle and failure campaign
+        run: python3 scripts/kind_integration.py --execute --sequential-runs 200 --crash-submits 500
+      - name: Upload sanitized campaign summary
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kind-gvisor-result
+          path: .local/kind-ci/result.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove disposable cluster
+        if: always()
+        run: |
+          if test -x .local/kind-ci/bin/kind && test -f .local/kind-ci/created-cluster; then
+            .local/kind-ci/bin/kind delete cluster --name agentos-ci
+          fi
