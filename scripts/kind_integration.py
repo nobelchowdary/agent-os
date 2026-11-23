@@ -32,6 +32,23 @@ def require(condition, category):
         raise CheckFailed(category)
 
 
+def rendered_resources(text):
+    """kubectl create prints one JSON document per input YAML resource."""
+    decoder, items = json.JSONDecoder(), []
+    pending = text.strip()
+    while pending:
+        value, used = decoder.raw_decode(pending)
+        require(isinstance(value, dict), 'invalid_rendered_resource')
+        if value.get('kind') == 'List':
+            require(isinstance(value.get('items'), list), 'invalid_rendered_list')
+            items.extend(value['items'])
+        else:
+            items.append(value)
+        pending = pending[used:].lstrip()
+    require(items and all(isinstance(item, dict) and item.get('kind') for item in items), 'empty_rendered_resources')
+    return {'apiVersion': 'v1', 'kind': 'List', 'items': items}
+
+
 def eventually(operation, predicate=bool, timeout=180, category='condition_timeout'):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -204,7 +221,7 @@ class Cluster:
         self.apply({'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'agentos-config', 'namespace': 'agentos-system'}, 'data': {'config.json': json.dumps(config)}})
         # API token travels only through stdin to kubectl, never command arguments/logs.
         self.apply({'apiVersion': 'v1', 'kind': 'Secret', 'metadata': {'name': 'agentos-api-tokens', 'namespace': 'agentos-system'}, 'stringData': {'local-token': self.token}})
-        objects = json.loads(self.kubectl('create', '--dry-run=client', '-f', str(ROOT / 'deploy' / 'api.yaml'), '-o', 'json'))
+        objects = rendered_resources(self.kubectl('create', '--dry-run=client', '-f', str(ROOT / 'deploy' / 'api.yaml'), '-o', 'json'))
         for item in objects['items']:
             if item['kind'] == 'Deployment':
                 spec = item['spec']['template']['spec']

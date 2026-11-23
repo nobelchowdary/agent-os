@@ -23,6 +23,15 @@ campaign = module('kind_integration')
 
 
 class KindSafetyTests(unittest.TestCase):
+    def test_multiple_kubectl_resource_documents_preserve_deployment_and_storage(self):
+        import json
+        items = [{'apiVersion': 'v1', 'kind': 'PersistentVolumeClaim'},
+                 {'apiVersion': 'apps/v1', 'kind': 'Deployment'},
+                 {'apiVersion': 'v1', 'kind': 'Service'}]
+        concatenated = '\n'.join(json.dumps(item) for item in items)
+        self.assertEqual(campaign.rendered_resources(concatenated)['items'], items)
+        self.assertEqual(campaign.rendered_resources(json.dumps({'kind': 'List', 'items': items}))['items'], items)
+
     def test_default_invocations_contact_nothing(self):
         for tool in (bootstrap, campaign):
             with self.subTest(tool=tool.__name__), patch('sys.argv', ['tool']), patch.object(tool.subprocess, 'run', side_effect=AssertionError('external command')), patch.object(tool.subprocess, 'Popen', side_effect=AssertionError('external process')), redirect_stdout(io.StringIO()) as output:
