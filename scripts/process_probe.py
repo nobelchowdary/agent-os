@@ -19,6 +19,32 @@ def require(condition, category):
         raise ProcessProbeError(category)
 
 
+# Only a fixed enum leaves the node. Both per-mount and superblock options are
+# inspected, including when mountinfo contains optional fields before "-".
+VERIFY_COUNTER_SCOPE = '''
+awk '
+    $5 == "/sys/fs/cgroup" {
+        matches++
+        separator = 0
+        for (field = 7; field <= NF; field++) {
+            if ($field == "-") { separator = field; break }
+        }
+        if (!separator || separator + 3 > NF || $(separator + 1) != "cgroup2") next
+        option_count = split($6 "," $(separator + 3), options, ",")
+        for (option_index = 1; option_index <= option_count; option_index++) {
+            if (options[option_index] == "pids_localevents") local_events = 1
+        }
+        valid++
+    }
+    END {
+        if (matches == 1 && valid == 1 && !local_events) print "hierarchical"
+        else if (matches == 1 && valid == 1 && local_events) print "local_events"
+        else print "unknown"
+    }
+' /proc/self/mountinfo 2>/dev/null
+'''
+
+
 # The sole path argument is constructed below from validated Kubernetes UID/QoS
 # metadata. Nothing from workload output is executed or interpolated into sh.
 READ_COUNTERS = '''
@@ -74,6 +100,7 @@ class ProcessObserver:
         self._stop, self._lock = threading.Event(), threading.Lock()
         self._thread = None
         self._started = self._closed = self._identity_verified = False
+        self._counter_scope_verified = False
         self._baseline = self._last = None
         self._sample_count = self._max_current = self._max_peak = self._max_events = 0
         self._limits, self._errors = set(), set()
@@ -145,6 +172,10 @@ class ProcessObserver:
                     and result[1] == 'agentos-ci', 'host_pid_observer_wrong_kind_container')
             self._container_id = result[0]
             self._identity_verified = True
+            scope = self._command(['docker', 'exec', self._container_id, 'sh', '-c',
+                                   VERIFY_COUNTER_SCOPE, 'agentos-pids-scope']).strip()
+            require(scope == 'hierarchical', 'host_pid_counter_scope_not_hierarchical')
+            self._counter_scope_verified = True
             require(self._read(), 'host_pid_cgroup_absent_before_probe')
             self._thread = threading.Thread(target=self._sample, name='agentos-host-pids', daemon=True)
             self._thread.start()
@@ -183,10 +214,11 @@ class ProcessObserver:
         with self._lock:
             baseline, last = self._baseline or {}, self._last or {}
             increase = max(0, last.get('pids_events_max', 0) - baseline.get('pids_events_max', 0))
-            complete = (self._identity_verified and self._sample_count >= 2 and not self._errors
+            complete = (self._identity_verified and self._counter_scope_verified and self._sample_count >= 2 and not self._errors
                         and not self._counter_reset)
             hit = complete and increase > 0
             return {'qualification': 'host_pid_limit_hit' if hit else 'not_qualified',
+                    'counter_scope': 'pod_subtree' if self._counter_scope_verified else 'unknown',
                     'pod_uid_verified': self._identity_verified and self._baseline is not None,
                     'pod_uid': self.pod_uid if self._identity_verified else None,
                     'node_name': self.node_name if self._identity_verified else None,

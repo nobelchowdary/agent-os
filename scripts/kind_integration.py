@@ -546,7 +546,18 @@ def load_measurements(watch, records, target):
     require(len(ids) == target, 'load_receipt_count_mismatch')
     observations, observed_peak = watch.load_observations(ids)
     intervals, lags = [], []
+    result_capture = {name: 0 for name in ('captured', 'unavailable', 'expired', 'missing', 'unknown',
+                                         'output_complete', 'output_incomplete', 'output_completeness_missing')}
     for record in records:
+        attachment = record.get('result')
+        if not isinstance(attachment, dict) or 'status' not in attachment:
+            result_capture['missing'] += 1
+        else:
+            status = attachment['status']
+            result_capture[status if status in ('captured', 'unavailable', 'expired') else 'unknown'] += 1
+        complete = attachment.get('output_complete') if isinstance(attachment, dict) else None
+        result_capture['output_complete' if complete is True else
+                       'output_incomplete' if complete is False else 'output_completeness_missing'] += 1
         times = observations[record['id']]
         require('started_at' in times and 'finished_at' in times, 'missing_load_pod_timestamps')
         started, finished = timestamp(times['started_at']), timestamp(times['finished_at'])
@@ -562,6 +573,7 @@ def load_measurements(watch, records, target):
     measurements = {'target_concurrency': target, 'peak_observed_running_containers': observed_peak,
             'peak_container_timestamp_overlap': interval_peak,
             'pod_exit_to_persisted_terminal_seconds': distribution(lags),
+            'result_capture': result_capture,
             'clock_basis': 'node agent-container finishedAt to API terminal event at; clock skew unqualified',
             'negative_lag_samples': sum(value < 0 for value in lags)}
     if observed_peak < target or interval_peak < target:

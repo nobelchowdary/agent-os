@@ -303,6 +303,22 @@ class KindSafetyTests(unittest.TestCase):
         self.assertEqual(report['crash_submits'], 0)
         self.assertEqual(report['cluster_qualification'], 'not_qualified')
 
+    def test_load_reports_numeric_capture_degradation_without_output_or_new_pass_gates(self):
+        from unittest.mock import Mock
+        records = [{'id': str(index), 'events': [{'state': 'succeeded', 'at': '2026-01-01T00:00:12Z'}]}
+                   for index in range(4)]
+        for record, status, complete in zip(records, ('captured', 'unavailable', 'expired'), (True, False, False)):
+            record['result'] = {'status': status, 'output_complete': complete, 'output_head': 'private-output'}
+        observations = {record['id']: {'started_at': '2026-01-01T00:00:00Z',
+                                      'finished_at': '2026-01-01T00:00:10Z'} for record in records}
+        watch = Mock()
+        watch.load_observations.return_value = (observations, 4)
+        measured = campaign.load_measurements(watch, records, 4)
+        self.assertEqual(measured['result_capture'], {'captured': 1, 'unavailable': 1, 'expired': 1, 'missing': 1,
+            'unknown': 0, 'output_complete': 1, 'output_incomplete': 2, 'output_completeness_missing': 1})
+        self.assertTrue(all(type(value) is int for value in measured['result_capture'].values()))
+        self.assertNotIn('private-output', str(measured))
+
     def test_failed_case_retains_prior_cases_and_observed_failure_evidence(self):
         from unittest.mock import Mock
         cluster = Mock()

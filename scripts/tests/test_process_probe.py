@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import threading
 import unittest
 from unittest.mock import patch
@@ -22,15 +23,18 @@ class FakeCluster:
     dedicated_kind = True
     worker_nodes = {'selected-worker'}
 
-    def __init__(self, samples=None, label='agentos-ci'):
+    def __init__(self, samples=None, label='agentos-ci', mount_scope='hierarchical'):
         self.samples = iter(samples or ['128 40 42 5'])
         self.label, self.calls = label, []
+        self.mount_scope = mount_scope
         self.sampled = threading.Event()
 
     def command(self, args, timeout):
         self.calls.append((args, timeout))
         if args[1] == 'inspect':
             return CONTAINER_ID + ' ' + self.label
+        if args[5] == probe.VERIFY_COUNTER_SCOPE:
+            return self.mount_scope
         try:
             value = next(self.samples)
         except StopIteration:
@@ -44,6 +48,25 @@ class FakeCluster:
 
 
 class ProcessProbeTests(unittest.TestCase):
+    def test_static_mount_verifier_checks_both_option_sets_and_exact_cgroup2_mount(self):
+        # Execute only the trusted read-only verifier, against synthetic stdin.
+        # No workload code, Docker, host mount inventory or temporary file runs.
+        script = probe.VERIFY_COUNTER_SCOPE.replace('/proc/self/mountinfo', '/dev/stdin')
+        for inventory, expected in [
+                ('29 23 0:26 / /sys/fs/cgroup rw,nosuid shared:3 - cgroup2 cgroup rw,nsdelegate\n', 'hierarchical'),
+                ('29 23 0:26 / /sys/fs/cgroup rw,pids_localevents - cgroup2 cgroup rw\n', 'local_events'),
+                ('29 23 0:26 / /sys/fs/cgroup ro - cgroup2 cgroup rw,pids_localevents\n', 'local_events'),
+                ('29 23 0:26 / /sys/fs/cgroup/unified rw - cgroup2 cgroup rw\n', 'unknown'),
+                ('29 23 0:26 / /sys/fs/cgroup rw - tmpfs tmpfs rw\n', 'unknown'),
+                ('29 23 0:26 / /sys/fs/cgroup rw - cgroup2\n', 'unknown'),
+                ('', 'unknown')]:
+            with self.subTest(inventory=inventory):
+                result = subprocess.run(['sh', '-c', script], input=inventory, text=True,
+                                        capture_output=True, timeout=2)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout.strip(), expected)
+                self.assertEqual(result.stderr, '')
+
     def test_strict_identity_and_selected_kind_gate_precede_every_host_command(self):
         for value, dedicated, reason in [
                 (pod(uid='../../etc/passwd'), True, 'invalid_pod_uid'),
@@ -84,9 +107,12 @@ class ProcessProbeTests(unittest.TestCase):
                 cluster = FakeCluster()
                 observer = probe.ProcessObserver(cluster, pod(qos=qos)).start()
                 # The first counter read completed synchronously before start returned.
-                self.assertEqual(len(cluster.calls), 2)
+                self.assertEqual(len(cluster.calls), 3)
                 result = observer.close()
-                args, timeout = cluster.calls[1]
+                scope_args, _ = cluster.calls[1]
+                self.assertEqual(scope_args, ['docker', 'exec', CONTAINER_ID, 'sh', '-c',
+                                             probe.VERIFY_COUNTER_SCOPE, 'agentos-pids-scope'])
+                args, timeout = cluster.calls[2]
                 self.assertEqual(args[:5], ['docker', 'exec', CONTAINER_ID, 'sh', '-c'])
                 self.assertEqual(args[5], probe.READ_COUNTERS)
                 self.assertEqual(args[6:], ['agentos-pids-observer', '/sys/fs/cgroup/kubepods.slice/' + suffix])
@@ -95,12 +121,27 @@ class ProcessProbeTests(unittest.TestCase):
                 self.assertNotIn('/sys/', json.dumps(result))
                 self.assertNotIn(CONTAINER_ID, json.dumps(result))
 
+    def test_unknown_or_local_mount_scope_refuses_before_counter_reads(self):
+        for scope in ('unknown', 'local_events', '', '/sys/fs/cgroup rw,pids_localevents'):
+            with self.subTest(scope=scope):
+                cluster = FakeCluster(mount_scope=scope)
+                observer = probe.ProcessObserver(cluster, pod())
+                with self.assertRaisesRegex(probe.ProcessProbeError, 'scope_not_hierarchical'):
+                    observer.start()
+                result = observer.close()
+                self.assertEqual(len(cluster.calls), 2)
+                self.assertEqual(result['counter_scope'], 'unknown')
+                self.assertEqual(result['qualification'], 'not_qualified')
+                self.assertEqual(result['sample_count'], 0)
+                self.assertFalse(result['readings_complete'])
+
     def test_counter_increase_qualifies_same_pod_and_gone_retains_last_numbers(self):
         cluster = FakeCluster(['128 40 42 5', '128 90 128 8', 'gone'])
         observer = probe.ProcessObserver(cluster, pod(), interval_seconds=.1).start()
         self.assertTrue(cluster.sampled.wait(2))
         result = observer.close()
         self.assertEqual(result['qualification'], 'host_pid_limit_hit')
+        self.assertEqual(result['counter_scope'], 'pod_subtree')
         self.assertEqual((result['pod_uid'], result['node_name'], result['qos_class']), (UID, 'selected-worker', 'Guaranteed'))
         self.assertTrue(result['pod_uid_verified'])
         self.assertEqual(result['pids_events_max_before'], 5)

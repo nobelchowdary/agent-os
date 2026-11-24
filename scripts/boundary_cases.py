@@ -95,7 +95,7 @@ def fork_code():
 children = []
 result = {"stage": "complete", "attempt_limit": __LIMIT__, "spawned": 0, "resource_denied": False, "children_reaped": 0}
 print(PREFIX+json.dumps({"stage": "fork_progress", "spawned": 0}), flush=True)
-time.sleep(5)
+time.sleep(8)
 resource.setrlimit(resource.RLIMIT_AS, (128*1024*1024, 128*1024*1024))
 def deadline(*unused):
     raise TimeoutError("bounded_process_deadline")
@@ -251,6 +251,7 @@ def safe_host_pid_evidence(value, pod):
     if not isinstance(value, dict):
         value = {}
     result = {'qualification': 'host_pid_limit_hit' if value.get('qualification') == 'host_pid_limit_hit' else 'not_qualified',
+              'counter_scope': 'pod_subtree' if value.get('counter_scope') == 'pod_subtree' else 'unverified',
               'pod_uid_verified': value.get('pod_uid_verified') is True,
               'same_pod_uid': bool(pod.get('metadata', {}).get('uid')) and value.get('pod_uid') == pod['metadata']['uid'],
               'same_selected_worker': bool(pod.get('spec', {}).get('nodeName')) and value.get('node_name') == pod['spec']['nodeName'],
@@ -264,7 +265,7 @@ def safe_host_pid_evidence(value, pod):
 
 
 def host_pid_limit_observed(value):
-    if value.get('qualification') != 'host_pid_limit_hit' or not all(value.get(field) is True for field in (
+    if value.get('qualification') != 'host_pid_limit_hit' or value.get('counter_scope') != 'pod_subtree' or not all(value.get(field) is True for field in (
             'pod_uid_verified', 'same_pod_uid', 'same_selected_worker', 'same_qos_class', 'readings_complete')):
         return False
     numbers = ('pids_max', 'pids_current_peak', 'pids_peak', 'pids_events_max_before', 'pids_events_max_after',
@@ -321,7 +322,7 @@ def process_exercise(cluster):
     if not pressure_termination and (done.get('state') != 'succeeded' or type(exit_code) is not int or exit_code != 0):
         raise BoundaryFailure('unexpected_bounded_process_outcome', evidence=diagnostics)
     if pressure_termination:
-        result = dict(diagnostics, qualification='host_limit_observed', outcome='sandbox_terminated_at_host_pid_limit')
+        result = dict(diagnostics, qualification='host_limit_observed', outcome='failed_execution_with_host_pid_limit_event')
     else:
         try:
             observed = result_from_output(done)

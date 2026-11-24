@@ -83,7 +83,7 @@ class FakeCluster:
 
 
 def observed_host_limit(pod):
-    return {'qualification': 'host_pid_limit_hit', 'pod_uid_verified': True, 'pod_uid': pod['metadata']['uid'],
+    return {'qualification': 'host_pid_limit_hit', 'counter_scope': 'pod_subtree', 'pod_uid_verified': True, 'pod_uid': pod['metadata']['uid'],
         'node_name': pod['spec']['nodeName'], 'qos_class': pod['status']['qosClass'],
         'pids_max': 128, 'pids_current_peak': 128, 'pids_peak': 128, 'pids_events_max_before': 0,
         'pids_events_max_after': 1, 'pids_events_max_increase': 1, 'readings_complete': True, 'sample_count': 4,
@@ -150,8 +150,8 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn('resource.RLIMIT_AS', code)
         self.assertIn('signal.alarm(15)', code)
         self.assertLess(code.index('"stage": "fork_progress", "spawned": 0'), code.index('os.fork()'))
-        self.assertLess(code.index('"stage": "fork_progress", "spawned": 0'), code.index('time.sleep(5)'))
-        self.assertLess(code.index('time.sleep(5)'), code.index('os.fork()'))
+        self.assertLess(code.index('"stage": "fork_progress", "spawned": 0'), code.index('time.sleep(8)'))
+        self.assertLess(code.index('time.sleep(8)'), code.index('os.fork()'))
         self.assertIn('len(children) % 8 == 0', code)
         attempt = next(node for node in ast.walk(tree) if isinstance(node, ast.For) and isinstance(node.iter, ast.Call)
                        and isinstance(node.iter.func, ast.Name) and node.iter.func.id == 'range')
@@ -325,7 +325,7 @@ class BoundaryTests(unittest.TestCase):
         process = result['bounded_process_exercise']
         self.assertTrue(observer.closed)
         self.assertEqual(process['qualification'], 'host_limit_observed')
-        self.assertEqual(process['outcome'], 'sandbox_terminated_at_host_pid_limit')
+        self.assertEqual(process['outcome'], 'failed_execution_with_host_pid_limit_event')
         self.assertEqual(process['fixture']['exit_code'], 128)
         self.assertTrue(process['selected_nodes_ready'])
         self.assertTrue(process['api_ready'])
@@ -340,7 +340,7 @@ class BoundaryTests(unittest.TestCase):
     def test_exit_128_without_every_actor_bound_counter_condition_stays_failed(self):
         invalid = [dict(qualification='not_qualified'), dict(pod_uid_verified=False), dict(pod_uid='wrong-pod'),
             dict(node_name='different-worker-b'), dict(qos_class='Burstable'), dict(readings_complete=False),
-            dict(pids_max=129), dict(pids_peak=129), dict(pids_current_peak=129), dict(pids_peak=None),
+            dict(pids_max=129), dict(pids_peak=129), dict(pids_current_peak=129), dict(pids_peak=None), dict(counter_scope='unverified'),
             dict(pids_events_max_before=1, pids_events_max_after=1, pids_events_max_increase=0),
             dict(pids_events_max_increase=2), dict(sample_count=1)]
         for change in invalid:
