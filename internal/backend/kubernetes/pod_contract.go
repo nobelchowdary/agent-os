@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var errPodSpecChanged = errors.New("execution Pod differs from the approved Job template")
@@ -34,7 +33,7 @@ func (b *Backend) executionPods(ctx context.Context, id string, job *batchv1.Job
 		// RuntimeClass admission modifies only overhead and scheduling. A live
 		// declaration may authorize those additions, never execution changes.
 		if runtimeClass == nil {
-			runtimeClass, err = b.client.NodeV1().RuntimeClasses().Get(ctx, b.runtimeClass, metav1.GetOptions{})
+			runtimeClass, err = b.runtimeDeclaration(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("verify execution RuntimeClass: %w", err)
 			}

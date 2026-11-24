@@ -20,6 +20,7 @@ import (
 	"github.com/nobelchowdary/agent-os/internal/model"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	nodev1 "k8s.io/api/node/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -47,14 +48,18 @@ const (
 var ErrCancelPending = backend.ErrPending
 
 type Backend struct {
-	client        kubernetes.Interface
-	namespace     string
-	runtimeClass  string
-	profile       model.RuntimeProfile
-	readyMu       sync.Mutex
-	readyUntil    time.Time
-	readyChecking chan struct{}
-	readyNow      func() time.Time
+	client          kubernetes.Interface
+	namespace       string
+	runtimeClass    string
+	profile         model.RuntimeProfile
+	readyMu         sync.Mutex
+	readyUntil      time.Time
+	readyChecking   chan struct{}
+	readyNow        func() time.Time
+	runtimeMu       sync.Mutex
+	runtimeUntil    time.Time
+	runtimeValue    *nodev1.RuntimeClass
+	runtimeChecking chan struct{}
 }
 
 var _ backend.Backend = (*Backend)(nil)
@@ -135,6 +140,13 @@ func (b *Backend) Ready(ctx context.Context) error {
 			// Declaration checks are shared by queue, submit and activation.
 			// Positive entries expire after three seconds; failures never cache.
 			b.readyUntil = b.now().Add(3 * time.Second)
+			// Do not stack two positive-cache lifetimes. Ready may have reused
+			// a RuntimeClass snapshot already near its own expiration.
+			b.runtimeMu.Lock()
+			if b.runtimeUntil.Before(b.readyUntil) {
+				b.readyUntil = b.runtimeUntil
+			}
+			b.runtimeMu.Unlock()
 		} else {
 			b.readyUntil = time.Time{}
 		}
@@ -163,7 +175,7 @@ func (b *Backend) checkPrerequisites(ctx context.Context) error {
 	if ns.DeletionTimestamp != nil || ns.Status.Phase == corev1.NamespaceTerminating {
 		return errors.New("workload namespace is terminating")
 	}
-	rc, err := b.client.NodeV1().RuntimeClasses().Get(ctx, b.runtimeClass, metav1.GetOptions{})
+	rc, err := b.runtimeDeclaration(ctx)
 	if err != nil {
 		return fmt.Errorf("sandbox RuntimeClass: %w", err)
 	}

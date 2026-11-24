@@ -58,8 +58,10 @@ func TestReadyPositiveCacheSingleFlightExpiresAndNeverCachesFailure(t *testing.T
 			t.Fatal("unsafe prerequisite cached")
 		}
 	}
-	if len(client.Actions()) != 6 {
-		t.Fatal("failure was cached", len(client.Actions()))
+	if len(client.Actions()) != 5 {
+		// The successful RuntimeClass lookup is shared independently; the
+		// failing policy and namespace checks still run on both attempts.
+		t.Fatal("failure was cached or positive RuntimeClass was refetched", len(client.Actions()))
 	}
 	if err := client.Tracker().Add(fixtures()[2]); err != nil {
 		t.Fatal(err)
