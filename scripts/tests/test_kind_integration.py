@@ -25,6 +25,113 @@ campaign = module('kind_integration')
 
 
 class KindSafetyTests(unittest.TestCase):
+    def test_offline_deadline_uses_persisted_clock_and_waits_for_terminal_job(self):
+        import copy
+
+        class DeadlineCluster:
+            def __init__(self, scope, failure=None):
+                self.scope, self.failure = scope, failure
+                self.offline = self.restored = self.finished = self.terminal = False
+                self.job_reads = self.pod_reads = 0
+                self.steps = []
+                self.job = {'metadata': {'uid': 'job-uid'}, 'spec': {'template': {'spec': {}}}}
+                self.pod = {'metadata': {'name': 'deadline-pod', 'uid': 'pod-uid', 'ownerReferences': [
+                    {'uid': 'job-uid', 'controller': True}]}, 'spec': {}}
+                if scope == 'pod':
+                    self.pod['spec']['activeDeadlineSeconds'] = 60
+                    self.job['spec']['template']['spec']['activeDeadlineSeconds'] = 60
+                else:
+                    self.job['spec']['activeDeadlineSeconds'] = 60
+
+            def submit(self, *args, **kwargs):
+                spec = {} if self.scope is None else {'deadline_scope': self.scope}
+                return {'id': 'synthetic', 'spec': spec}
+
+            def running_pod(self, run): return copy.deepcopy(self.pod)
+
+            def kubectl(self, *args):
+                if args[-1] == '--replicas=0':
+                    self.steps.append('api-stopped')
+                    self.offline = True
+                elif args[-1] == '--replicas=1':
+                    self.steps.append('api-restoring')
+                    self.offline = False
+                if self.failure == 'wait' and 'wait' in args:
+                    raise campaign.CheckFailed('injected_wait_failure')
+
+            def stop_forward(self): pass
+
+            def rollout(self):
+                self.restored = True
+                self.steps.append('api-restored')
+
+            def obj(self, kind, name):
+                if kind == 'pod':
+                    self.pod_reads += 1
+                    value = copy.deepcopy(self.pod)
+                    if self.pod_reads > 1:
+                        if self.failure == 'replaced-pod':
+                            value['metadata']['uid'] = 'replacement'
+                        if self.failure != 'no-deadline':
+                            value['status'] = {'phase': 'Failed', 'reason': 'DeadlineExceeded'}
+                            self.steps.append('pod-deadline')
+                    return value
+                value = copy.deepcopy(self.job)
+                if self.offline:
+                    self.job_reads += 1
+                    # A failure target is not the terminal state the case needs.
+                    terminal_after = 1 if self.scope == 'pod' else 2
+                    self.terminal = self.job_reads > terminal_after
+                    value['status'] = {'conditions': [{'type': 'Failed' if self.terminal else 'FailureTarget',
+                        'status': 'True', 'reason': 'BackoffLimitExceeded' if self.scope == 'pod' else
+                        'DeadlineExceeded' if self.job_reads > 1 else 'Pending'}]}
+                    if self.terminal:
+                        self.steps.append('job-terminal')
+                return value
+
+            def finish(self, run, state, reason):
+                self.finished = True
+                self.assertion = (state, reason)
+                if not self.restored or not self.terminal:
+                    raise AssertionError('finished before terminal Job and API restoration')
+                self.steps.append('terminal-read')
+
+        def bounded_eventually(operation, predicate=bool, timeout=180, category='condition_timeout'):
+            for _ in range(5):
+                value = operation()
+                if predicate(value):
+                    return value
+            raise campaign.CheckFailed(category)
+
+        for scope in ('pod', 'job', None):
+            with self.subTest(scope=scope), patch.object(campaign, 'eventually', bounded_eventually):
+                cluster = DeadlineCluster(scope)
+                result = campaign.deadline_with_api_stopped(cluster)
+                self.assertEqual(result['deadline_scope'], scope or 'job')
+                self.assertEqual(result['api_replicas_during_deadline'], 0)
+                self.assertTrue(result['terminal_job_observed'])
+                self.assertEqual(cluster.assertion, ('failed', 'deadline_exceeded'))
+                self.assertLess(cluster.steps.index('job-terminal'), cluster.steps.index('api-restoring'))
+                if scope == 'pod':
+                    self.assertLess(cluster.steps.index('pod-deadline'), cluster.steps.index('job-terminal'))
+                else:
+                    self.assertEqual(cluster.pod_reads, 0)
+
+        for failure, category in (('replaced-pod', 'deadline_pod_ownership_changed'),
+                                  ('no-deadline', 'deadline_depended_on_api'),
+                                  ('wait', 'injected_wait_failure')):
+            with self.subTest(failure=failure), patch.object(campaign, 'eventually', bounded_eventually):
+                cluster = DeadlineCluster('pod', failure)
+                with self.assertRaisesRegex(campaign.CheckFailed, category):
+                    campaign.deadline_with_api_stopped(cluster)
+                self.assertTrue(cluster.restored)
+                self.assertFalse(cluster.finished)
+        cluster = DeadlineCluster('pod')
+        cluster.job['spec']['activeDeadlineSeconds'] = 60
+        with self.assertRaisesRegex(campaign.CheckFailed, 'deadline_scope_changed'):
+            campaign.deadline_with_api_stopped(cluster)
+        self.assertEqual(cluster.steps, [])
+
     def test_boundary_failure_evidence_survives_the_campaign_adapter(self):
         class ProbeFailure(RuntimeError):
             def __init__(self):
@@ -197,6 +304,7 @@ class KindSafetyTests(unittest.TestCase):
         self.assertEqual(cluster.configuration['startup_timeout_seconds'], 20)
         self.assertEqual(cluster.configuration['resource_quota']['pods'], '16')
         self.assertEqual(cluster.configuration['templates']['python']['termination_grace_period_seconds'], 10)
+        self.assertEqual(cluster.configuration['templates']['python']['deadline_scope'], 'pod')
         self.assertEqual(cluster.configuration['templates']['python']['image'], 'private/python@sha256:' + 'b' * 64)
         self.assertEqual(cluster.configuration['api_kubernetes_egress'],
                          {'host_cidrs': ['192.0.2.5/32', '2001:db8::1/128'], 'tcp_port': 6443})

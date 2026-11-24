@@ -280,6 +280,9 @@ func (b *Backend) Render(run model.Record) (*batchv1.Job, error) {
 	if s.TerminationGracePeriodSeconds < 0 || s.TerminationGracePeriodSeconds > 30 {
 		return nil, errors.New("termination grace must be between 1 and 30 seconds, or omitted for legacy runs")
 	}
+	if !s.DeadlineScope.Valid() {
+		return nil, errors.New("deadline scope must be job or pod, or omitted for legacy runs")
+	}
 	if b.profile.Kind == "aws-nitro-isolated" && s.Resources.DiskMiB >= s.Resources.MemoryMiB {
 		return nil, errors.New("Nitro memory-backed scratch must be smaller than the workload memory limit")
 	}
@@ -304,7 +307,7 @@ func (b *Backend) Render(run model.Record) (*batchv1.Job, error) {
 		TypeMeta:   metav1.TypeMeta{APIVersion: "batch/v1", Kind: "Job"},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: b.namespace, Labels: ownedLabels(run.ID), Annotations: map[string]string{SpecHashAnnotation: hash}},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: &zero, ActiveDeadlineSeconds: &deadline, Parallelism: &one, Completions: &one, Suspend: &suspended,
+			BackoffLimit: &zero, Parallelism: &one, Completions: &one, Suspend: &suspended,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: ownedLabels(run.ID)},
 				Spec: corev1.PodSpec{
@@ -322,6 +325,11 @@ func (b *Backend) Render(run model.Record) (*batchv1.Job, error) {
 				},
 			},
 		},
+	}
+	if s.EffectiveDeadlineScope() == model.DeadlinePod {
+		job.Spec.Template.Spec.ActiveDeadlineSeconds = &deadline
+	} else {
+		job.Spec.ActiveDeadlineSeconds = &deadline
 	}
 	if s.TerminationGracePeriodSeconds != 0 {
 		grace := s.TerminationGracePeriodSeconds
@@ -587,7 +595,7 @@ func (b *Backend) observeJob(id string, job *batchv1.Job, readPods func() ([]cor
 		}
 	}()
 	if errors.Is(podErr, errPodSpecChanged) {
-		return backend.Observation{State: model.Cancelling, Reason: "execution Pod differs from the approved Job template", ReasonCode: model.ReasonInfraFailure}, nil
+		return backend.Observation{State: model.Cancelling, Reason: podSpecChangedReason(podErr), ReasonCode: model.ReasonInfraFailure}, nil
 	}
 	if complete {
 		return backend.Observation{State: model.Succeeded, Reason: "Kubernetes Job completed", ReasonCode: model.ReasonCompleted, FinishedAt: terminalJobFinishedAt(job, batchv1.JobComplete)}, nil
@@ -717,6 +725,21 @@ func podFailureCode(pods []corev1.Pod) (model.ReasonCode, bool) {
 		disruption, conflictingDisruption := disruptionTarget(pod)
 		if invalidAgent || agentStatuses > 1 || conflictingDisruption {
 			code = model.ReasonUnknown
+		} else if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "DeadlineExceeded" && pod.Spec.ActiveDeadlineSeconds != nil && *pod.Spec.ActiveDeadlineSeconds > 0 {
+			// Kubelet enforces the Pod clock independently of the API. Its
+			// structured cause supersedes a generic termination exit, while
+			// competing specific causes do not establish their ordering.
+			competingDisruption := false
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == corev1.DisruptionTarget && condition.Status == corev1.ConditionTrue && condition.Reason != corev1.PodReasonTerminationByKubelet {
+					competingDisruption = true
+				}
+			}
+			if code == model.ReasonOOMKilled || code == model.ReasonImagePullFailed || competingDisruption {
+				code = model.ReasonUnknown
+			} else {
+				code = model.ReasonDeadlineExceeded
+			}
 		} else if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" {
 			// v1.37 kubelet storage-limit evictions set Evicted without a
 			// DisruptionTarget; pressure evictions set a true target. Admission

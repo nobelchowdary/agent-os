@@ -19,6 +19,7 @@
       "resources": {"cpu_milli": 1000, "memory_mib": 512, "disk_mib": 128},
       "default_timeout_seconds": 60,
       "max_timeout_seconds": 300,
+      "deadline_scope": "pod",
       "termination_grace_period_seconds": 10
     },
     "node": {
@@ -27,6 +28,7 @@
       "resources": {"cpu_milli": 1000, "memory_mib": 512, "disk_mib": 128},
       "default_timeout_seconds": 60,
       "max_timeout_seconds": 300,
+      "deadline_scope": "pod",
       "termination_grace_period_seconds": 10
     }
   }

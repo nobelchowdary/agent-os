@@ -791,7 +791,7 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 86400,
-            "description": "Execution budget within the selected administrator maximum. Omit for its default."
+            "description": "Execution budget within the selected administrator maximum. The resolved administrator deadline_scope selects the Kubernetes clock; new defaults use Pod StartTime, including image pulls. Omit for the administrator timeout default."
           }
         },
         "required": [
@@ -962,6 +962,14 @@
           },
           "timeout_seconds": {
             "type": "integer"
+          },
+          "deadline_scope": {
+            "type": "string",
+            "enum": [
+              "job",
+              "pod"
+            ],
+            "description": "Administrator-owned execution clock persisted with the run. New runs default to pod (relative to kubelet Pod StartTime, including image pulls). Omitted legacy specifications retain job (relative to Job start/resume); reads never fill the omission."
           },
           "termination_grace_period_seconds": {
             "type": "integer",

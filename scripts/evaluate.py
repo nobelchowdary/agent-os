@@ -120,7 +120,7 @@ def write_json(path, value, exclusive=False):
 def validate_workload(workload):
     fields = {"format_version", "template", "image", "command", "resources",
               "timeout_seconds", "runtime_profile", "validation"}
-    require(fields <= set(workload) <= fields | {"termination_grace_period_seconds"}, "workload_fields")
+    require(fields <= set(workload) <= fields | {"termination_grace_period_seconds", "deadline_scope"}, "workload_fields")
     require(workload["format_version"] == 1, "workload_version")
     require(isinstance(workload["template"], str) and NAME.fullmatch(workload["template"]), "template_name")
     require(isinstance(workload["image"], str) and DIGEST.fullmatch(workload["image"]), "image_must_be_digest_pinned")
@@ -133,6 +133,8 @@ def validate_workload(workload):
     for key, lower, upper in (("cpu_milli", 1, 64000), ("memory_mib", 16, 65536), ("disk_mib", 16, 65536)):
         require(type(resources[key]) is int and lower <= resources[key] <= upper, "resource_bounds")
     require(type(workload["timeout_seconds"]) is int and 1 <= workload["timeout_seconds"] <= 3600, "timeout_bounds")
+    if "deadline_scope" in workload:
+        require(workload["deadline_scope"] in ("job", "pod"), "deadline_scope")
     if "termination_grace_period_seconds" in workload:
         grace = workload["termination_grace_period_seconds"]
         require(type(grace) is int and 1 <= grace <= 30, "termination_grace_bounds")
@@ -169,7 +171,22 @@ def validate_protocol(protocol):
         require(type(value) in (int, float) and math.isfinite(value) and lower <= value <= upper, "protocol_metric_bounds")
 
 
-def pod_template(workload, labels, execution_deadline=False):
+def deadline_scope(workload, baseline="agentos"):
+    """Keep omitted legacy workload inputs unchanged, including native clocks."""
+    return "pod" if baseline == "agent-sandbox" else workload.get("deadline_scope", "job")
+
+
+def deadline_contract(workload, baseline):
+    scope = deadline_scope(workload, baseline)
+    registered_scope = deadline_scope(workload)
+    return {"scope": scope, "registered_scope": registered_scope,
+            "registration": "explicit" if "deadline_scope" in workload else "legacy_implicit_job",
+            "matches_registered_scope": scope == registered_scope,
+            "boundary": "pod_start_time" if scope == "pod" else "job_start_time_after_activation",
+            "fault_qualification": "not_collected"}
+
+
+def pod_template(workload, labels, baseline="agentos"):
     """Mirror backend.Render's administrator-owned execution/security contract."""
     resources = workload["resources"]
     quantities = {"cpu": str(resources["cpu_milli"]) + "m", "memory": str(resources["memory_mib"]) + "Mi",
@@ -200,7 +217,7 @@ def pod_template(workload, labels, execution_deadline=False):
         template["spec"]["nodeSelector"] = {"eks.amazonaws.com/nitro-sandbox": "true"}
     if "termination_grace_period_seconds" in workload:
         template["spec"]["terminationGracePeriodSeconds"] = workload["termination_grace_period_seconds"]
-    if execution_deadline:
+    if deadline_scope(workload, baseline) == "pod":
         template["spec"]["activeDeadlineSeconds"] = workload["timeout_seconds"]
     return template
 
@@ -213,18 +230,21 @@ def labels(registration, trial=None):
 
 
 def job_manifest(registration, name, trial):
-    return {"apiVersion": "batch/v1", "kind": "Job", "metadata": {
+    workload = registration["workload"]
+    job = {"apiVersion": "batch/v1", "kind": "Job", "metadata": {
         "name": name, "namespace": registration["namespace"], "labels": labels(registration, trial)}, "spec": {
-            "backoffLimit": 0, "activeDeadlineSeconds": registration["workload"]["timeout_seconds"],
-            "parallelism": 1, "completions": 1, "suspend": False,
-            "template": pod_template(registration["workload"], labels(registration, trial))}}
+            "backoffLimit": 0, "parallelism": 1, "completions": 1, "suspend": False,
+            "template": pod_template(workload, labels(registration, trial))}}
+    if deadline_scope(workload) == "job":
+        job["spec"]["activeDeadlineSeconds"] = workload["timeout_seconds"]
+    return job
 
 
 def upstream_manifests(registration):
     name = "ae-" + registration["registration_id"][:16]
     metadata = {"name": name, "namespace": registration["namespace"], "labels": labels(registration)}
     return [{"apiVersion": EXT, "kind": "SandboxTemplate", "metadata": metadata,
-             "spec": {"podTemplate": pod_template(registration["workload"], labels(registration), execution_deadline=True),
+             "spec": {"podTemplate": pod_template(registration["workload"], labels(registration), baseline="agent-sandbox"),
                       "service": False, "networkPolicyManagement": "Unmanaged",
                       "envVarsInjectionPolicy": "Disallowed"}},
             {"apiVersion": EXT, "kind": "SandboxWarmPool", "metadata": copy.deepcopy(metadata),
@@ -436,8 +456,10 @@ def assert_pod_profile(actual, expected):
 
 def assert_job_profile(job, registration):
     spec = job.get("spec", {})
+    workload = registration["workload"]
+    expected_deadline = workload["timeout_seconds"] if deadline_scope(workload) == "job" else None
     for key, value in {"backoffLimit": 0, "parallelism": 1, "completions": 1,
-                       "activeDeadlineSeconds": registration["workload"]["timeout_seconds"]}.items():
+                       "activeDeadlineSeconds": expected_deadline}.items():
         require(spec.get(key) == value, "job_profile_changed")
     expected = pod_template(registration["workload"], {})
     require(not spec.get("template", {}).get("spec", {}).get("nodeName"), "job_node_pin_changed")
@@ -514,6 +536,7 @@ def assert_record_spec(record, registration):
     workload = registration["workload"]
     for key in ("template", "image", "command", "resources", "timeout_seconds"):
         require(spec.get(key) == workload[key], "api_resolved_spec_mismatch")
+    require(spec.get("deadline_scope", "job") == deadline_scope(workload), "api_resolved_spec_mismatch")
     require(spec.get("termination_grace_period_seconds", 30) == workload.get("termination_grace_period_seconds", 30),
             "api_resolved_spec_mismatch")
     require(spec.get("runtime_class") == workload["runtime_profile"]["runtime_class"], "api_resolved_spec_mismatch")
@@ -679,7 +702,7 @@ def trial(kube, registration, baseline, index, result, save, api=None):
                 require(len(candidates) <= 1, "multiple_execution_pods")
                 if candidates:
                     pod = candidates[0]
-                    expected = pod_template(registration["workload"], {}, execution_deadline=(baseline == "agent-sandbox"))
+                    expected = pod_template(registration["workload"], {}, baseline=baseline)
                     assert_pod_profile(pod.get("spec", {}), expected["spec"])
                     assert_pod_metadata(pod.get("metadata", {}), expected["metadata"])
                     remember_descendant(result, pod, pod_parent)
@@ -735,6 +758,9 @@ def register(args):
     experiment = protocol.get("experiment_id", "")
     require(isinstance(experiment, str) and NAME.fullmatch(experiment), "experiment_id")
     workload = validate_workload(read_json(args.workload, 32 * 1024))
+    require("deadline_scope" in workload, "new_registration_requires_explicit_deadline_scope")
+    if "agent-sandbox" in {protocol["baseline"], protocol["candidate"]}:
+        require(workload["deadline_scope"] == "pod", "upstream_comparison_requires_pod_deadline")
     environment = read_json(args.environment, 64 * 1024)
     require(isinstance(args.context, str) and 0 < len(args.context) <= 256 and not args.context.startswith("-"), "explicit_context_required")
     require(NAME.fullmatch(args.namespace), "namespace_name")
@@ -792,6 +818,7 @@ def collect(args):
               "qualification": {"status": "not_verified", "evidence_ref": "separate dynamic conformance required"},
               "billing_complete": False, "node_reduction_demonstrated": False,
               "cache_state": registration["cache_state"], "poll_seconds": registration["poll_seconds"],
+              "deadline_contract": deadline_contract(registration["workload"], args.baseline),
               "timing_boundary": "client submission start to observed terminal success and validated stdout",
               "readiness_boundary": "client submission start to first observed workload readiness log line"}
     if args.baseline == "agent-sandbox":

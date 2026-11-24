@@ -1,6 +1,8 @@
 # Agent OS: evaluation plan
 
-Status: proposed performance experiments, updated November 23, 2026. Execution, comparison and compatibility-smoke tooling exists. The [real kind/gVisor lifecycle campaign](KIND_TESTS.md) has passed; comparative performance, EKS qualification and cost savings remain unmeasured. All numerical gates below are starting hypotheses to revise with design partners before registration/testing. The executable workflow is in [EVALUATION_RUNBOOK.md](EVALUATION_RUNBOOK.md).
+Status: performance experiments with founder decisions updated November 24, 2026. Execution, comparison and compatibility-smoke tooling exists. The [real kind/gVisor lifecycle campaign](KIND_TESTS.md) has passed; comparative performance, EKS qualification and cost savings remain unmeasured. The executable workflow is in [EVALUATION_RUNBOOK.md](EVALUATION_RUNBOOK.md).
+
+Before the EKS comparison, the founder selected the existing executable benefit gate: **20% lower fully accounted cost per correct task OR 25% less median operator time**. Operator steps remain a reported diagnostic, not a 50% acceptance gate. Keep correctness, trial-count and latency requirements in the registered protocol; do not reinterpret the exploratory targets below as alternative pass rules. Future registrations use the agreed Pod deadline scope, while historical admitted runs retain their stored Job clock; [decision 0007](decisions/0007-persisted-execution-deadline-scope.md) defines the compatibility boundary. No existing registration is rewritten by these decisions.
 
 November 19 update: EKS is the first available pilot environment. Follow the [EKS evaluation brief](EKS_EVALUATION_BRIEF.md) and [current capability map](ALPHA_CAPABILITY_MAP.md). First qualify and measure existing execution; compare upstream implementations before building idle-memory recovery or another policy gateway.
 

@@ -67,7 +67,8 @@ class FakeKube:
             pods = []
             for (kind, obj_name), obj in self.objects.items():
                 if kind in {"Job", "Sandbox"}:
-                    template = ev.pod_template(self.registration["workload"], {ev.PART: "agent-os"}, execution_deadline=(kind == "Sandbox"))
+                    template = ev.pod_template(self.registration["workload"], {ev.PART: "agent-os"},
+                                               baseline="agent-sandbox" if kind == "Sandbox" else "direct-job")
                     spec = template["spec"]
                     # Actual API servers canonicalize 1000m to 1.
                     if spec["containers"][0]["resources"]["requests"]["cpu"] == "1000m":
@@ -125,6 +126,7 @@ class FakeAPI:
         return {"id": self.run_id, "state": "succeeded", "spec": {
             **{k: w[k] for k in ("template", "image", "command", "resources", "timeout_seconds", "runtime_profile")},
             **({"termination_grace_period_seconds": w["termination_grace_period_seconds"]} if "termination_grace_period_seconds" in w else {}),
+            **({"deadline_scope": w["deadline_scope"]} if "deadline_scope" in w else {}),
             "runtime_class": w["runtime_profile"]["runtime_class"]}}
 
     def call(self, path, body=None, key=None):
@@ -234,6 +236,78 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(template["spec"]["podTemplate"]["spec"]["activeDeadlineSeconds"], 30)
         self.assertEqual(pool["spec"]["replicas"], 0)
 
+    def test_new_registration_requires_a_clock_and_matches_upstream_pod_clock(self):
+        for scope, category in ((None, "explicit_deadline_scope"), ("job", "upstream_comparison_requires_pod_deadline")):
+            current = workload()
+            if scope is None:
+                current.pop("deadline_scope")
+            else:
+                current["deadline_scope"] = scope
+            self.workload_path.write_text(json.dumps(current))
+            with self.subTest(scope=scope), self.assertRaisesRegex(ev.Failure, category):
+                ev.register(self.args)
+            self.assertFalse(Path(self.args.evidence_dir).exists())
+        for invalid in ("", "container", None, True, 1, ["pod"]):
+            current["deadline_scope"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ev.Failure, "deadline_scope"):
+                ev.validate_workload(current)
+        current["deadline_scope"] = "job"
+        self.workload_path.write_text(json.dumps(current))
+        self.protocol["baseline"] = "direct-job"
+        self.protocol_path.write_text(json.dumps(self.protocol))
+        registration = self.registered()
+        self.assertEqual(registration["workload"]["deadline_scope"], "job")
+
+    def test_registered_clock_is_enforced_at_exactly_one_manifest_level(self):
+        registration = self.registered()
+        for scope in ("pod", "job"):
+            registration["workload"]["deadline_scope"] = scope
+            job = ev.job_manifest(registration, "trial", 0)
+            pod = job["spec"]["template"]["spec"]
+            self.assertEqual(job["spec"].get("activeDeadlineSeconds"), 30 if scope == "job" else None)
+            self.assertEqual(pod.get("activeDeadlineSeconds"), 30 if scope == "pod" else None)
+            ev.assert_job_profile(job, registration)
+            for level in (job["spec"], pod):
+                changed = copy.deepcopy(job)
+                target = changed["spec"] if level is job["spec"] else changed["spec"]["template"]["spec"]
+                target["activeDeadlineSeconds"] = 31
+                with self.subTest(scope=scope, level="job" if level is job["spec"] else "pod"), self.assertRaises(ev.Failure):
+                    ev.assert_job_profile(changed, registration)
+            record = FakeAPI(FakeKube(registration)).record()
+            ev.assert_record_spec(record, registration)
+            record["spec"]["deadline_scope"] = "job" if scope == "pod" else "pod"
+            with self.assertRaisesRegex(ev.Failure, "api_resolved_spec_mismatch"):
+                ev.assert_record_spec(record, registration)
+
+    def test_legacy_registration_keeps_hashes_and_original_native_clocks(self):
+        registration = self.registered()
+        registration["workload"].pop("deadline_scope")
+        registration["workload_sha256"] = ev.digest(registration["workload"])
+        path = Path(self.args.evidence_dir) / "registration.json"
+        ev.write_json(path, registration)
+        path.chmod(0o400)
+        before = path.read_bytes()
+        loaded = ev.load_registration(self.args)[1]
+        self.assertEqual(loaded, registration)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertNotIn("deadline_scope", loaded["workload"])
+        job = ev.job_manifest(loaded, "legacy", 0)
+        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 30)
+        self.assertNotIn("activeDeadlineSeconds", job["spec"]["template"]["spec"])
+        ev.assert_job_profile(job, loaded)
+        record = FakeAPI(FakeKube(loaded)).record()
+        ev.assert_record_spec(record, loaded)
+        record["spec"]["deadline_scope"] = "job"
+        ev.assert_record_spec(record, loaded)
+        template, _ = ev.upstream_manifests(loaded)
+        self.assertEqual(template["spec"]["podTemplate"]["spec"]["activeDeadlineSeconds"], 30)
+        contract = ev.deadline_contract(loaded["workload"], "agent-sandbox")
+        self.assertEqual(contract["scope"], "pod")
+        self.assertEqual(contract["registered_scope"], "job")
+        self.assertEqual(contract["registration"], "legacy_implicit_job")
+        self.assertFalse(contract["matches_registered_scope"])
+        self.assertEqual(contract["fault_qualification"], "not_collected")
+
     def test_grace_is_registered_and_compared_without_changing_legacy_inputs(self):
         current = workload()
         legacy = copy.deepcopy(current)
@@ -304,6 +378,9 @@ class EvaluationTest(unittest.TestCase):
                 self.assertFalse(result["billing_complete"])
                 self.assertNotIn("full_cost_usd", result)
                 self.assertEqual(result["environment_sha256"], registration["environment"]["sha256"])
+                self.assertEqual(result["deadline_contract"]["scope"], "pod")
+                self.assertTrue(result["deadline_contract"]["matches_registered_scope"])
+                self.assertEqual(result["deadline_contract"]["fault_qualification"], "not_collected")
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             ev.cleanup(self.args)
         self.assertFalse(kube.objects)

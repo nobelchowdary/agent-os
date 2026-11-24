@@ -14,6 +14,7 @@
     "disk_mib": 128
   },
   "timeout_seconds": 30,
+  "deadline_scope": "pod",
   "termination_grace_period_seconds": 10,
   "runtime_profile": {
     "kind": "aws-nitro-isolated",

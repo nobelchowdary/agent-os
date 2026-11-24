@@ -141,15 +141,34 @@ func (s *Store) Admit(record model.Record, idempotencyKey string, maxTenantActiv
 				if err := json.Unmarshal(value, &entry); err != nil {
 					return fmt.Errorf("decode idempotency entry: %w", err)
 				}
-				if entry.Fingerprint != fingerprint {
-					return ErrIdempotencyConflict
-				}
 				original, err := readRecord(records, entry.ID)
 				if err != nil {
 					return err
 				}
 				if original.TenantID != record.TenantID {
 					return errors.New("corrupt idempotency tenant index")
+				}
+				if entry.Fingerprint != fingerprint {
+					// Adding the default Pod clock must not make a retry of an
+					// already admitted legacy run conflict. This alias applies only
+					// to an omitted original scope and otherwise identical policy.
+					// Never rewrite its Spec, key or canonical fingerprint.
+					legacy := record.Spec
+					if original.Spec.DeadlineScope != "" || (legacy.DeadlineScope != model.DeadlineJob && legacy.DeadlineScope != model.DeadlinePod) {
+						return ErrIdempotencyConflict
+					}
+					legacy.DeadlineScope = ""
+					legacyFingerprint, err := specFingerprint(legacy)
+					if err != nil {
+						return err
+					}
+					originalFingerprint, err := specFingerprint(original.Spec)
+					if err != nil || originalFingerprint != entry.Fingerprint {
+						return ErrIntegrity
+					}
+					if legacyFingerprint != entry.Fingerprint {
+						return ErrIdempotencyConflict
+					}
 				}
 				result, err = projectResult(tx, original)
 				return err

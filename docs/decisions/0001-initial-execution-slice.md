@@ -1,6 +1,6 @@
 # 0001: A bounded execution slice before broader orchestration
 
-Date: November 18, 2026. Status: accepted for the first experimental alpha; revisit after workload evaluation.
+Date: November 18, 2026. Status: accepted for the first experimental alpha; revisit after workload evaluation. The new-admission deadline default is superseded by [ADR 0007](0007-persisted-execution-deadline-scope.md); the original Job clock remains the legacy persisted contract.
 
 ## Context
 
@@ -16,7 +16,7 @@ Every run is durably admitted before acknowledgment. Active-run reservations inc
 
 Caller inputs are a template name, optional command and execution timeout within the template maximum. They cannot provide arbitrary PodSpecs, images, mounts, privileges or credentials. Workload traffic is denied by default. Node/runtime and network enforcement need independent cluster qualification.
 
-The API's `timeout_seconds` controls the Job execution deadline, not a strict admission-to-completion deadline. Unstarted work has a separate five-minute startup wait. Completed Job status remains authoritative when the API reconnects after downtime. Reconciliation uses at most eight workers and prioritizes already-requested cancellations; the alpha accepts at most 64 active reservations (default 16). No fixed cancellation-latency SLO is promised.
+The initial API's `timeout_seconds` controls the Job execution deadline. [ADR 0007](0007-persisted-execution-deadline-scope.md) changes new admissions to the Pod clock while retaining the original clock on legacy records. Neither is a strict admission-to-completion deadline. Unstarted work has a separate five-minute startup wait. Completed Job status remains authoritative when the API reconnects after downtime. Reconciliation uses at most eight workers and prioritizes already-requested cancellations; the alpha accepts at most 64 active reservations (default 16). No fixed cancellation-latency SLO is promised.
 
 ## Consequences
 

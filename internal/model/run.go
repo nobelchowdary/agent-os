@@ -117,6 +117,19 @@ type RuntimeProfile struct {
 	RequiredHandler string `json:"required_handler"`
 }
 
+// DeadlineScope selects the Kubernetes execution clock. An omitted persisted
+// value is the original Job clock; configuration defaults apply only to new runs.
+type DeadlineScope string
+
+const (
+	DeadlineJob DeadlineScope = "job"
+	DeadlinePod DeadlineScope = "pod"
+)
+
+func (scope DeadlineScope) Valid() bool {
+	return scope == "" || scope == DeadlineJob || scope == DeadlinePod
+}
+
 // Spec is resolved from an administrator-owned template, never a caller PodSpec.
 type Spec struct {
 	Template                      string          `json:"template"`
@@ -126,7 +139,15 @@ type Spec struct {
 	Command                       []string        `json:"command"`
 	Resources                     Resources       `json:"resources"`
 	TimeoutSeconds                int64           `json:"timeout_seconds"`
+	DeadlineScope                 DeadlineScope   `json:"deadline_scope,omitempty"`
 	TerminationGracePeriodSeconds int64           `json:"termination_grace_period_seconds,omitempty"`
+}
+
+func (s Spec) EffectiveDeadlineScope() DeadlineScope {
+	if s.DeadlineScope == "" {
+		return DeadlineJob
+	}
+	return s.DeadlineScope
 }
 
 type CreateRequest struct {

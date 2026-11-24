@@ -73,7 +73,13 @@ def smoke(configuration, runtime_class):
             assert job["spec"]["suspend"] is True
             pod = job["spec"]["template"]["spec"]
             assert pod["runtimeClassName"] == runtime_class
+            template = json.loads((root / configuration).read_text())["templates"]["python"]
+            scope = template.get("deadline_scope", "pod")
+            timeout = template["default_timeout_seconds"]
+            assert job["spec"].get("activeDeadlineSeconds") == (timeout if scope == "job" else None)
+            assert pod.get("activeDeadlineSeconds") == (timeout if scope == "pod" else None)
             assert call("/v1/plan", body={"template": "python", "runtime_class": "runc"})[0] == 400
+            assert call("/v1/plan", body={"template": "python", "deadline_scope": "job"})[0] == 400
             if runtime_class == "isolated-sandbox":
                 assert job["spec"]["template"]["metadata"]["annotations"]["sandbox.amazonaws.com/network-isolated"] == "true"
                 assert pod["nodeSelector"]["eks.amazonaws.com/nitro-sandbox"] == "true"

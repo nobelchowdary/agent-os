@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,11 +28,12 @@ func (b *Backend) validateExecutionPods(ctx context.Context, job *batchv1.Job, p
 	var err error
 	var runtimeClass *nodev1.RuntimeClass
 	for i := range pods {
-		if samePodExecution(&pods[i], &job.Spec.Template, nil) {
+		mismatch := podExecutionMismatch(&pods[i], &job.Spec.Template, nil)
+		if mismatch == nil {
 			continue
 		}
 		if !couldBeRuntimeAdmission(&pods[i], &job.Spec.Template) {
-			return nil, errPodSpecChanged
+			return nil, mismatch
 		}
 		// RuntimeClass admission modifies only overhead and scheduling. A live
 		// declaration may authorize those additions, never execution changes.
@@ -43,11 +43,11 @@ func (b *Backend) validateExecutionPods(ctx context.Context, job *batchv1.Job, p
 				return nil, fmt.Errorf("verify execution RuntimeClass: %w", err)
 			}
 			if runtimeClass.Handler != b.profile.RequiredHandler {
-				return nil, errPodSpecChanged
+				return nil, podMismatchAt("runtimeClass.handler")
 			}
 		}
-		if !samePodExecution(&pods[i], &job.Spec.Template, runtimeClass) {
-			return nil, errPodSpecChanged
+		if mismatch := podExecutionMismatch(&pods[i], &job.Spec.Template, runtimeClass); mismatch != nil {
+			return nil, mismatch
 		}
 	}
 	return pods, nil
@@ -70,56 +70,7 @@ func couldBeRuntimeAdmission(pod *corev1.Pod, template *corev1.PodTemplateSpec) 
 // scheduler binding and exact standard tolerations are permitted. RuntimeClass
 // admission's verified additions are the only other accepted spec changes.
 func samePodExecution(pod *corev1.Pod, template *corev1.PodTemplateSpec, runtimeClass *nodev1.RuntimeClass) bool {
-	if !sameGrace(pod.Spec.TerminationGracePeriodSeconds, template.Spec.TerminationGracePeriodSeconds) {
-		return false
-	}
-	for key, value := range template.Labels {
-		if pod.Labels[key] != value {
-			return false
-		}
-	}
-	for key, value := range template.Annotations {
-		if pod.Annotations[key] != value {
-			return false
-		}
-	}
-	for key, value := range pod.Annotations {
-		if strings.HasPrefix(key, "sandbox.amazonaws.com/") {
-			if expected, ok := template.Annotations[key]; !ok || value != expected {
-				return false
-			}
-		}
-	}
-	p, q := normalizedPodSpec(&pod.Spec), normalizedPodSpec(&template.Spec)
-	// NodeName is assigned by the scheduler after admission. The template's
-	// runtime and scheduling restrictions remain part of the comparison.
-	p.NodeName = q.NodeName
-	allowed := standardPodTolerations()
-	if runtimeClass != nil {
-		if q.RuntimeClassName == nil || runtimeClass.Name != *q.RuntimeClassName {
-			return false
-		}
-		if runtimeClass.Overhead != nil {
-			q.Overhead = runtimeClass.Overhead.PodFixed.DeepCopy()
-		}
-		if runtimeClass.Scheduling != nil {
-			if q.NodeSelector == nil {
-				q.NodeSelector = map[string]string{}
-			}
-			for key, value := range runtimeClass.Scheduling.NodeSelector {
-				if existing, ok := q.NodeSelector[key]; ok && existing != value {
-					return false
-				}
-				q.NodeSelector[key] = value
-			}
-			allowed = append(allowed, runtimeClass.Scheduling.Tolerations...)
-		}
-	}
-	if !sameTolerations(p.Tolerations, q.Tolerations, allowed) {
-		return false
-	}
-	p.Tolerations, q.Tolerations = nil, nil
-	return apiequality.Semantic.DeepEqual(p, q)
+	return podExecutionMismatch(pod, template, runtimeClass) == nil
 }
 
 func normalizedPodSpec(spec *corev1.PodSpec) *corev1.PodSpec {

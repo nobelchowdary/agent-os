@@ -8,7 +8,7 @@ This first alpha provides a runnable execution API and constrained Python/Node e
 
 ## Available in this version
 
-- Administrator-owned environments with digest-pinned images and fixed CPU, RAM, scratch-space and execution-time settings.
+- Administrator-owned environments with digest-pinned images and fixed CPU, RAM, scratch-space and execution-time settings. New runs persist a Pod deadline clock; previously admitted runs retain their original Job clock.
 - Kubernetes Jobs with an administrator-selected gVisor or AWS Nitro isolated profile, non-root processes, read-only root filesystems, dropped capabilities and no workload Kubernetes token. Real kind/gVisor lifecycle checks have passed; EKS and Nitro remain unqualified.
 - Bearer-token authentication with tenant-scoped create, list, status, bounded logs and cancellation.
 - Durable run records, lifecycle events and bounded exit/output results using transactional embedded storage.

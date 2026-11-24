@@ -16,35 +16,36 @@ import (
 
 func TestActualPodMutationTriggersCleanupAndQuarantinesOutput(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		mutate func(*corev1.Pod)
+		name      string
+		mutate    func(*corev1.Pod)
+		fieldPath string
 	}{
-		{"image", func(p *corev1.Pod) { p.Spec.Containers[0].Image = "unapproved" }},
-		{"command", func(p *corev1.Pod) { p.Spec.Containers[0].Command = []string{"other"} }},
-		{"environment", func(p *corev1.Pod) { p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "INJECTED", Value: "value"}} }},
+		{"image", func(p *corev1.Pod) { p.Spec.Containers[0].Image = "unapproved" }, "spec.containers[0].image"},
+		{"command", func(p *corev1.Pod) { p.Spec.Containers[0].Command = []string{"other"} }, "spec.containers[0].command"},
+		{"environment", func(p *corev1.Pod) { p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "INJECTED", Value: "value"}} }, "spec.containers[0].env"},
 		{"sidecar", func(p *corev1.Pod) {
 			p.Spec.Containers = append(p.Spec.Containers, corev1.Container{Name: "extra", Image: "unapproved"})
-		}},
-		{"init container", func(p *corev1.Pod) { p.Spec.InitContainers = []corev1.Container{{Name: "extra", Image: "unapproved"}} }},
+		}, "spec.containers"},
+		{"init container", func(p *corev1.Pod) { p.Spec.InitContainers = []corev1.Container{{Name: "extra", Image: "unapproved"}} }, "spec.initContainers"},
 		{"ephemeral container", func(p *corev1.Pod) {
 			p.Spec.EphemeralContainers = []corev1.EphemeralContainer{{EphemeralContainerCommon: corev1.EphemeralContainerCommon{Name: "debug", Image: "unapproved"}}}
-		}},
-		{"host network", func(p *corev1.Pod) { p.Spec.HostNetwork = true }},
-		{"runtime", func(p *corev1.Pod) { value := "runc"; p.Spec.RuntimeClassName = &value }},
-		{"service account", func(p *corev1.Pod) { p.Spec.ServiceAccountName = "default" }},
-		{"token", func(p *corev1.Pod) { yes := true; p.Spec.AutomountServiceAccountToken = &yes }},
+		}, "spec.ephemeralContainers"},
+		{"host network", func(p *corev1.Pod) { p.Spec.HostNetwork = true }, "spec.hostNetwork"},
+		{"runtime", func(p *corev1.Pod) { value := "runc"; p.Spec.RuntimeClassName = &value }, "spec.runtimeClassName"},
+		{"service account", func(p *corev1.Pod) { p.Spec.ServiceAccountName = "default" }, "spec.serviceAccountName"},
+		{"token", func(p *corev1.Pod) { yes := true; p.Spec.AutomountServiceAccountToken = &yes }, "spec.automountServiceAccountToken"},
 		{"volume", func(p *corev1.Pod) {
 			p.Spec.Volumes = append(p.Spec.Volumes, corev1.Volume{Name: "host", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/"}}})
-		}},
-		{"mount", func(p *corev1.Pod) { p.Spec.Containers[0].VolumeMounts[0].MountPath = "/other" }},
-		{"container privilege", func(p *corev1.Pod) { yes := true; p.Spec.Containers[0].SecurityContext.Privileged = &yes }},
-		{"pod user", func(p *corev1.Pod) { root := int64(0); p.Spec.SecurityContext.RunAsUser = &root }},
-		{"grace", func(p *corev1.Pod) { value := int64(120); p.Spec.TerminationGracePeriodSeconds = &value }},
+		}, "spec.volumes"},
+		{"mount", func(p *corev1.Pod) { p.Spec.Containers[0].VolumeMounts[0].MountPath = "/other" }, "spec.containers[0].volumeMounts[0].mountPath"},
+		{"container privilege", func(p *corev1.Pod) { yes := true; p.Spec.Containers[0].SecurityContext.Privileged = &yes }, "spec.containers[0].securityContext.privileged"},
+		{"pod user", func(p *corev1.Pod) { root := int64(0); p.Spec.SecurityContext.RunAsUser = &root }, "spec.securityContext.runAsUser"},
+		{"grace", func(p *corev1.Pod) { value := int64(120); p.Spec.TerminationGracePeriodSeconds = &value }, "spec.terminationGracePeriodSeconds"},
 		{"resources", func(p *corev1.Pod) {
 			p.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory] = resource.MustParse("2Gi")
-		}},
-		{"provider policy", func(p *corev1.Pod) { p.Annotations = map[string]string{NitroNetworkAnnotation: "false"} }},
-		{"DNS policy", func(p *corev1.Pod) { p.Spec.DNSPolicy = corev1.DNSDefault }},
+		}, "spec.containers[0].resources.limits"},
+		{"provider policy", func(p *corev1.Pod) { p.Annotations = map[string]string{NitroNetworkAnnotation: "false"} }, "metadata.annotations"},
+		{"DNS policy", func(p *corev1.Pod) { p.Spec.DNSPolicy = corev1.DNSDefault }, "spec.dnsPolicy"},
 	} {
 		for _, terminal := range []string{"active", "complete", "failed"} {
 			t.Run(tc.name+"/"+terminal, func(t *testing.T) {
@@ -76,11 +77,18 @@ func TestActualPodMutationTriggersCleanupAndQuarantinesOutput(t *testing.T) {
 				if err != nil || ob.State != model.Cancelling || ob.ReasonCode != model.ReasonInfraFailure {
 					t.Fatalf("unapproved Pod authorized an outcome: %+v %v", ob, err)
 				}
+				wantReason := errPodSpecChanged.Error() + ": " + tc.fieldPath
+				if ob.Reason != wantReason {
+					t.Fatalf("Pod mutation reason = %q, want redacted schema field %q", ob.Reason, wantReason)
+				}
 				result, err := b.CaptureResult(ctx, run.ID)
 				if !errors.Is(err, errPodSpecChanged) || result.Status != "unavailable" {
 					t.Fatalf("unapproved output was captured: %+v %v", result, err)
 				}
-				if _, err := b.Logs(ctx, run.ID, 100); !errors.Is(err, errPodSpecChanged) {
+				if err.Error() != wantReason {
+					t.Fatal("result quarantine error did not retain only the redacted schema field")
+				}
+				if _, err := b.Logs(ctx, run.ID, 100); !errors.Is(err, errPodSpecChanged) || err.Error() != wantReason {
 					t.Fatalf("unapproved output was readable: %v", err)
 				}
 				if err := b.Cleanup(ctx, run); !errors.Is(err, backend.ErrPending) {

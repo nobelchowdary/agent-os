@@ -314,6 +314,7 @@ class Cluster:
         config.update(max_active_per_tenant=4, max_active_total=4, startup_timeout_seconds=20,
                       result_retention_seconds=86400, kubernetes_qps=50, kubernetes_burst=100)
         python = config['templates']['python']
+        python['deadline_scope'] = 'pod'
         python['termination_grace_period_seconds'] = 10
         python['image'] = self.workload_image
         python['resources'] = {'cpu_milli': 100, 'memory_mib': 256, 'disk_mib': 32}
@@ -345,6 +346,7 @@ class Cluster:
                               'templates': {name: {'resources': template['resources'],
                                   'image': template['image'],
                                   'termination_grace_period_seconds': template['termination_grace_period_seconds'],
+                                  'deadline_scope': template.get('deadline_scope', 'pod'),
                                   'max_timeout_seconds': template['max_timeout_seconds']}
                                   for name, template in config['templates'].items()},
                               'resource_quota': self.obj('resourcequota', 'agentos-workloads')['spec']['hard']}
@@ -482,6 +484,71 @@ def cancel_ignoring_term(cluster):
                     'stop_seconds': round(time.monotonic() - started, 3)}
         time.sleep(.2)
     raise CheckFailed('cancellation_did_not_finish')
+
+
+def deadline_with_api_stopped(cluster):
+    """Observe the persisted native deadline while no API process can enforce it."""
+    run = cluster.submit("import time; print('deadline-started',flush=True); time.sleep(120)",
+                         'offline-deadline', timeout=60)
+    scope = run.get('spec', {}).get('deadline_scope', 'job')
+    require(scope in ('job', 'pod'), 'unsupported_deadline_scope')
+    pod = cluster.running_pod(run)
+    job_name = 'agentos-' + run['id']
+    job = cluster.obj('job', job_name)
+    job_uid, pod_uid = job.get('metadata', {}).get('uid'), pod.get('metadata', {}).get('uid')
+    require(job_uid and pod_uid and any(owner.get('uid') == job_uid and owner.get('controller') is True
+            for owner in pod.get('metadata', {}).get('ownerReferences', [])), 'deadline_pod_ownership_changed')
+    job_deadline = 60 if scope == 'job' else None
+    pod_deadline = 60 if scope == 'pod' else None
+    require(job.get('spec', {}).get('activeDeadlineSeconds') == job_deadline
+            and job.get('spec', {}).get('template', {}).get('spec', {}).get('activeDeadlineSeconds') == pod_deadline
+            and pod.get('spec', {}).get('activeDeadlineSeconds') == pod_deadline, 'deadline_scope_changed')
+
+    def current_job():
+        item = cluster.obj('job', job_name)
+        require(item.get('metadata', {}).get('uid') == job_uid, 'deadline_job_identity_changed')
+        return item
+
+    def current_pod():
+        item = cluster.obj('pod', pod['metadata']['name'])
+        require(item.get('metadata', {}).get('uid') == pod_uid and any(
+            owner.get('uid') == job_uid and owner.get('controller') is True
+            for owner in item.get('metadata', {}).get('ownerReferences', [])), 'deadline_pod_ownership_changed')
+        return item
+
+    def job_failed(item):
+        return any(condition.get('type') == 'Failed' and condition.get('status') == 'True'
+                   for condition in item.get('status', {}).get('conditions', []))
+
+    def job_deadline_reached(item):
+        return any(condition.get('reason') == 'DeadlineExceeded' and condition.get('status') == 'True'
+                   for condition in item.get('status', {}).get('conditions', []))
+
+    def pod_deadline_reached(item):
+        status = item.get('status', {})
+        return status.get('phase') == 'Failed' and status.get('reason') == 'DeadlineExceeded'
+
+    try:
+        # Restore even if scaling or waiting has an ambiguous failure outcome.
+        cluster.kubectl('-n', 'agentos-system', 'scale', 'deployment/agentos-api', '--replicas=0')
+        cluster.kubectl('-n', 'agentos-system', 'wait', '--for=delete', 'pod', '-l',
+                        'app.kubernetes.io/component=api', '--timeout=60s')
+        cluster.stop_forward()
+        reached = pod_deadline_reached(current_pod()) if scope == 'pod' else job_deadline_reached(current_job())
+        require(not reached, 'deadline_fired_before_api_stopped')
+        if scope == 'pod':
+            eventually(current_pod, pod_deadline_reached, timeout=90, category='deadline_depended_on_api')
+            # A Pod failure is not the terminal Job observation required by the API.
+            eventually(current_job, job_failed, timeout=60, category='deadline_job_never_terminal')
+        else:
+            eventually(current_job, lambda item: job_failed(item) and job_deadline_reached(item),
+                       timeout=90, category='deadline_depended_on_api')
+    finally:
+        cluster.kubectl('-n', 'agentos-system', 'scale', 'deployment/agentos-api', '--replicas=1')
+        cluster.rollout()
+    cluster.finish(run, 'failed', 'deadline_exceeded')
+    return {'deadline_scope': scope, 'deadline_boundary': 'pod_start_time' if scope == 'pod' else 'job_activation',
+            'api_replicas_during_deadline': 0, 'terminal_job_observed': True}
 
 
 def finished_kubelet_unavailable(cluster):
@@ -723,23 +790,7 @@ def run_campaign(cluster, sequential, crash_submits, only_case='all', load_sizes
                 cluster.kubectl('uncordon', node)
         case('node_drain', drain_node)
 
-        def offline_deadline():
-            run = cluster.submit("import time; print('deadline-started',flush=True); time.sleep(120)", 'offline-deadline', timeout=60)
-            cluster.running_pod(run)
-            cluster.kubectl('-n', 'agentos-system', 'scale', 'deployment/agentos-api', '--replicas=0')
-            cluster.kubectl('-n', 'agentos-system', 'wait', '--for=delete', 'pod', '-l', 'app.kubernetes.io/component=api', '--timeout=60s')
-            cluster.stop_forward()
-            try:
-                require(not any(c.get('reason') == 'DeadlineExceeded' and c.get('status') == 'True' for c in cluster.obj('job', 'agentos-' + run['id']).get('status', {}).get('conditions', [])), 'deadline_fired_before_api_stopped')
-                job = eventually(lambda: cluster.obj('job', 'agentos-' + run['id']),
-                    lambda item: any(c.get('reason') == 'DeadlineExceeded' and c.get('status') == 'True' for c in item.get('status', {}).get('conditions', [])),
-                    timeout=90, category='deadline_depended_on_api')
-                require(job['spec']['activeDeadlineSeconds'] == 60, 'job_deadline_changed')
-            finally:
-                cluster.kubectl('-n', 'agentos-system', 'scale', 'deployment/agentos-api', '--replicas=1')
-                cluster.rollout()
-            cluster.finish(run, 'failed', 'deadline_exceeded')
-        case('deadline_with_api_scaled_zero', offline_deadline)
+        case('deadline_with_api_scaled_zero', lambda: deadline_with_api_stopped(cluster))
         case('finished_kubelet_unavailable', lambda: finished_kubelet_unavailable(cluster))
 
         def cancelled():

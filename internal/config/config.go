@@ -25,12 +25,13 @@ type Principal struct {
 }
 
 type Template struct {
-	Image                         string          `json:"image"`
-	Command                       []string        `json:"command"`
-	Resources                     model.Resources `json:"resources"`
-	DefaultTimeoutSeconds         int64           `json:"default_timeout_seconds"`
-	MaxTimeoutSeconds             int64           `json:"max_timeout_seconds"`
-	TerminationGracePeriodSeconds int64           `json:"termination_grace_period_seconds,omitempty"`
+	Image                         string              `json:"image"`
+	Command                       []string            `json:"command"`
+	Resources                     model.Resources     `json:"resources"`
+	DefaultTimeoutSeconds         int64               `json:"default_timeout_seconds"`
+	MaxTimeoutSeconds             int64               `json:"max_timeout_seconds"`
+	DeadlineScope                 model.DeadlineScope `json:"deadline_scope,omitempty"`
+	TerminationGracePeriodSeconds int64               `json:"termination_grace_period_seconds,omitempty"`
 }
 
 type Config struct {
@@ -111,6 +112,9 @@ func (c Config) Validate() error {
 		}
 		if t.DefaultTimeoutSeconds < 1 || t.MaxTimeoutSeconds < t.DefaultTimeoutSeconds || t.MaxTimeoutSeconds > 86400 {
 			return fmt.Errorf("template %q has invalid time limits", id)
+		}
+		if !t.DeadlineScope.Valid() {
+			return fmt.Errorf("template %q deadline scope must be job or pod", id)
 		}
 		if t.TerminationGracePeriodSeconds < 0 || t.TerminationGracePeriodSeconds > 30 {
 			return fmt.Errorf("template %q grace period must be 1–30 seconds (zero preserves the legacy 30-second default)", id)
@@ -225,6 +229,13 @@ func (c Config) Resolve(req model.CreateRequest) (model.Spec, error) {
 		return model.Spec{}, errors.New("timeout exceeds environment policy")
 	}
 	s := model.Spec{Template: req.Template, Image: t.Image, RuntimeClass: profile.RuntimeClass, Command: append([]string(nil), command...), Resources: t.Resources, TimeoutSeconds: timeout}
+	s.DeadlineScope = t.DeadlineScope
+	if s.DeadlineScope == "" {
+		s.DeadlineScope = model.DeadlinePod
+	}
+	if !s.DeadlineScope.Valid() {
+		return model.Spec{}, errors.New("deadline scope must be job or pod")
+	}
 	s.TerminationGracePeriodSeconds = t.TerminationGracePeriodSeconds
 	if c.RuntimeProfile != nil {
 		// Copy rather than aliasing mutable administrator configuration. Preserve

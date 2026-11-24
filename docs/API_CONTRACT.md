@@ -22,6 +22,8 @@ Bodies are bounded at 32 KiB and must be one UTF-8 JSON object with exact field 
 
 An explicitly supplied Content-Type must be `application/json` (parameters are allowed). A missing header remains accepted for legacy callers. Multiple Authorization or Idempotency-Key values are rejected; a provided key must be nonempty visible ASCII and at most 128 bytes. Legacy API calls can still omit the key and receive a fresh admission each time; the Python client requires one. Persist the exact request and key before submitting, then retry that pair after an ambiguous response.
 
+The resolved `spec.deadline_scope` is administrator-owned. New admissions explicitly record `pod` by default, using kubelet Pod `StartTime` (including image pulls); administrators can choose `job`. Missing scope on a stored legacy specification retains the original Job start/resume clock. Callers cannot submit the field. Startup waiting remains a separate admission-age bound. Matching legacy idempotency retries may differ only by this newly added scope and still return the unchanged original record; explicit-scope admissions and all other resolved differences retain conflict behavior. See [ADR 0007](decisions/0007-persisted-execution-deadline-scope.md).
+
 These are deliberate validation tightenings in the experimental API: callers relying on duplicate/case-aliased fields, null/default substitutions, explicit zero timeouts or empty provided keys must send the documented form. Existing wire state names, resolved specification fingerprints, tenant scoping and matching-key result lookup are preserved.
 
 ## Lifecycle enforcement

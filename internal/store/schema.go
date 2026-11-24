@@ -24,7 +24,9 @@ var (
 	epochKey       = []byte("store_epoch")
 )
 
-const currentSchemaVersion uint64 = 3
+// Version 4 fences older binaries that cannot retain a persisted deadline scope.
+// Its upgrade changes metadata only; omitted scopes keep the legacy Job clock.
+const currentSchemaVersion uint64 = 4
 
 var dataBuckets = [][]byte{recordsBucket, tenantIndexBucket, activeBucket, tenantActiveBucket, idempotencyBucket}
 
