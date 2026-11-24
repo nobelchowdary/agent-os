@@ -606,7 +606,7 @@ def run_boundary_checks(cluster):
     try:
         return helper.boundary_checks(cluster)
     except helper.BoundaryFailure as failure:
-        raise CheckFailed(str(failure)) from None
+        raise CheckFailed(str(failure), evidence=failure.evidence) from None
 
 
 def run_campaign(cluster, sequential, crash_submits, only_case='all', load_sizes=(), results=None):

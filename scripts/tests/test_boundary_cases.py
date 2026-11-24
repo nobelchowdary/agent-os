@@ -17,7 +17,8 @@ def observation(reachable):
 
 
 def admitted_pod():
-    return {'spec': {'runtimeClassName': 'gvisor', 'automountServiceAccountToken': False, 'nodeName': 'different-worker-a',
+    return {'metadata': {'uid': '11111111-2222-4333-8444-555555555555'}, 'status': {'qosClass': 'Guaranteed'},
+        'spec': {'runtimeClassName': 'gvisor', 'automountServiceAccountToken': False, 'nodeName': 'different-worker-a',
         'securityContext': {'runAsNonRoot': True}, 'volumes': [{'name': 'tmp', 'emptyDir': {}}],
         'containers': [{'name': 'agent', 'securityContext': {'readOnlyRootFilesystem': True,
             'allowPrivilegeEscalation': False, 'capabilities': {'drop': ['ALL']}}}]}}
@@ -28,6 +29,8 @@ class FakeCluster:
         self.applied, self.commands, self.submitted = [], [], []
         self.finished_states = []
         self.worker_nodes = {'different-worker-a', 'different-worker-b'}
+        self.api_node, self.dedicated_kind = 'selected-api', False
+        self.drains, self.ready = 0, True
         self.pid_limit = 128
         self.pod = admitted_pod()
         self.restricted = observation(dict(controlled_peer=False, kubernetes_api=False, dns=False, metadata=False))
@@ -65,12 +68,37 @@ class FakeCluster:
 
     def running_pod(self, run): return self.pod
 
+    def drain(self): self.drains += 1
+
+    def request(self, *args, **kwargs): return {'status': 'ready' if self.ready else 'unready'}
+
     def finish(self, run, state, timeout):
         self.finished_states.append((run['id'], state))
         value = self.restricted if run['id'] == 1 else {'stage': 'complete', 'attempt_limit': boundary.MAX_CHILDREN,
             'spawned': 10, 'children_reaped': 10, 'resource_denied': True}
+        if run['id'] == 3:
+            value = {'gvisor': True}
         return {'state': 'succeeded', 'reason_code': 'completed',
                 'result': {'exit_code': 0, 'output_head': boundary.PREFIX + json.dumps(value) + '\n'}}
+
+
+def observed_host_limit(pod):
+    return {'qualification': 'host_pid_limit_hit', 'pod_uid_verified': True, 'pod_uid': pod['metadata']['uid'],
+        'node_name': pod['spec']['nodeName'], 'qos_class': pod['status']['qosClass'],
+        'pids_max': 128, 'pids_current_peak': 128, 'pids_peak': 128, 'pids_events_max_before': 0,
+        'pids_events_max_after': 1, 'pids_events_max_increase': 1, 'readings_complete': True, 'sample_count': 4,
+        'cgroup_gone': True}
+
+
+class FakeObserver:
+    def __init__(self, value):
+        self.value, self.started, self.closed = value, False, False
+    def start(self):
+        self.started = True
+        return self
+    def close(self):
+        self.closed = True
+        return self.value
 
 
 class BoundaryTests(unittest.TestCase):
@@ -122,6 +150,8 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn('resource.RLIMIT_AS', code)
         self.assertIn('signal.alarm(15)', code)
         self.assertLess(code.index('"stage": "fork_progress", "spawned": 0'), code.index('os.fork()'))
+        self.assertLess(code.index('"stage": "fork_progress", "spawned": 0'), code.index('time.sleep(5)'))
+        self.assertLess(code.index('time.sleep(5)'), code.index('os.fork()'))
         self.assertIn('len(children) % 8 == 0', code)
         attempt = next(node for node in ast.walk(tree) if isinstance(node, ast.For) and isinstance(node.iter, ast.Call)
                        and isinstance(node.iter.func, ast.Name) and node.iter.func.id == 'range')
@@ -276,6 +306,122 @@ class BoundaryTests(unittest.TestCase):
         self.assertNotIn(secret, json.dumps(evidence))
         self.assertEqual(len(cluster.submitted), 2)  # No followup success can hide this failure.
         self.assertEqual(cluster.commands[-1][:2], ('delete', 'namespace'))
+
+    def test_pid_limit_termination_requires_bound_counter_evidence_and_recovery(self):
+        cluster = FakeCluster()
+        cluster.dedicated_kind = True
+        observer = FakeObserver(observed_host_limit(cluster.pod))
+        original = cluster.finish
+        def finish(run, state, timeout):
+            if run['id'] != 2:
+                return original(run, state, timeout)
+            self.assertTrue(observer.started)
+            self.assertIsNone(state)
+            return {'state': 'failed', 'reason_code': 'task_error', 'result': {'exit_code': 128,
+                'output_head': boundary.PREFIX + json.dumps({'stage': 'fork_progress', 'spawned': 16})}}
+        with patch.object(boundary, 'create_process_observer', return_value=observer), patch.object(cluster, 'finish', side_effect=finish), patch.dict(
+                boundary.os.environ, {}, clear=True):
+            result = boundary.boundary_checks(cluster)
+        process = result['bounded_process_exercise']
+        self.assertTrue(observer.closed)
+        self.assertEqual(process['qualification'], 'host_limit_observed')
+        self.assertEqual(process['outcome'], 'sandbox_terminated_at_host_pid_limit')
+        self.assertEqual(process['fixture']['exit_code'], 128)
+        self.assertTrue(process['selected_nodes_ready'])
+        self.assertTrue(process['api_ready'])
+        self.assertTrue(process['followup_actual_gvisor_succeeded'])
+        self.assertTrue(process['process_and_followup_cleaned_up'])
+        self.assertEqual(cluster.drains, 2)
+        self.assertEqual(result['guest_pid_ceiling'], 'not_qualified')
+        serialized = json.dumps(process['host_pid_observation'])
+        self.assertNotIn(cluster.pod['metadata']['uid'], serialized)
+        self.assertNotIn(cluster.pod['spec']['nodeName'], serialized)
+
+    def test_exit_128_without_every_actor_bound_counter_condition_stays_failed(self):
+        invalid = [dict(qualification='not_qualified'), dict(pod_uid_verified=False), dict(pod_uid='wrong-pod'),
+            dict(node_name='different-worker-b'), dict(qos_class='Burstable'), dict(readings_complete=False),
+            dict(pids_max=129), dict(pids_peak=129), dict(pids_current_peak=129), dict(pids_peak=None),
+            dict(pids_events_max_before=1, pids_events_max_after=1, pids_events_max_increase=0),
+            dict(pids_events_max_increase=2), dict(sample_count=1)]
+        for change in invalid:
+            cluster = FakeCluster()
+            cluster.dedicated_kind = True
+            report = observed_host_limit(cluster.pod)
+            report.update(change)
+            observer = FakeObserver(report)
+            original = cluster.finish
+            def finish(run, state, timeout):
+                return original(run, state, timeout) if run['id'] != 2 else {
+                    'state': 'failed', 'reason_code': 'task_error', 'result': {'exit_code': 128}}
+            with self.subTest(change=change), patch.object(boundary, 'create_process_observer', return_value=observer), patch.object(
+                    cluster, 'finish', side_effect=finish), patch.dict(boundary.os.environ, {}, clear=True), self.assertRaisesRegex(
+                    boundary.BoundaryFailure, 'unexpected_bounded_process_outcome'):
+                boundary.boundary_checks(cluster)
+            self.assertTrue(observer.closed)
+            self.assertEqual(cluster.drains, 0)
+
+    def test_other_failure_codes_and_failed_recovery_do_not_qualify_resource_pressure(self):
+        for state, reason, exit_code, ready in [('failed', 'oom_killed', 128, True), ('failed', 'task_error', 137, True),
+                                                ('failed', 'task_error', 128, False)]:
+            cluster = FakeCluster()
+            cluster.dedicated_kind, cluster.ready = True, ready
+            observer = FakeObserver(observed_host_limit(cluster.pod))
+            original = cluster.finish
+            def finish(run, expected, timeout):
+                return original(run, expected, timeout) if run['id'] != 2 else {
+                    'state': state, 'reason_code': reason, 'result': {'exit_code': exit_code}}
+            # The real API is called with a named state argument for the pressure
+            # result; keep that interface explicit in the fake too.
+            def dispatch(run, state, timeout):
+                return finish(run, state, timeout)
+            category = 'boundary_process_recovery_failed' if not ready else 'unexpected_bounded_process_outcome'
+            with self.subTest(reason=reason, exit_code=exit_code, ready=ready), patch.object(boundary, 'create_process_observer', return_value=observer), patch.object(
+                    cluster, 'finish', side_effect=dispatch), patch.dict(boundary.os.environ, {}, clear=True), self.assertRaisesRegex(
+                    boundary.BoundaryFailure, category):
+                boundary.boundary_checks(cluster)
+            self.assertTrue(observer.closed)
+
+    def test_observer_is_closed_when_terminal_read_fails_and_never_runs_for_external(self):
+        cluster = FakeCluster()
+        with patch.object(boundary, 'create_process_observer', side_effect=AssertionError('external host access')), patch.dict(
+                boundary.os.environ, {}, clear=True):
+            result = boundary.boundary_checks(cluster)
+        self.assertEqual(result['bounded_process_exercise']['host_pid_observation']['qualification'], 'not_qualified')
+        cluster = FakeCluster()
+        cluster.dedicated_kind = True
+        observer = FakeObserver(observed_host_limit(cluster.pod))
+        original = cluster.finish
+        def finish(run, state, timeout):
+            if run['id'] == 2:
+                raise RuntimeError('terminal_read_unavailable')
+            return original(run, state, timeout)
+        with patch.object(boundary, 'create_process_observer', return_value=observer), patch.object(cluster, 'finish', side_effect=finish), patch.dict(
+                boundary.os.environ, {}, clear=True), self.assertRaisesRegex(RuntimeError, 'terminal_read_unavailable'):
+            boundary.boundary_checks(cluster)
+        self.assertTrue(observer.closed)
+
+    def test_observer_start_failure_cannot_supply_limit_evidence_from_close(self):
+        cluster = FakeCluster()
+        cluster.dedicated_kind = True
+        observer = FakeObserver(observed_host_limit(cluster.pod))
+        original = cluster.finish
+        def finish(run, state, timeout):
+            return original(run, state, timeout) if run['id'] != 2 else {
+                'state': 'failed', 'reason_code': 'task_error', 'result': {'exit_code': 128}}
+        with patch.object(observer, 'start', side_effect=RuntimeError('baseline_unavailable')), patch.object(
+                boundary, 'create_process_observer', return_value=observer), patch.object(cluster, 'finish', side_effect=finish), patch.dict(
+                boundary.os.environ, {}, clear=True), self.assertRaisesRegex(boundary.BoundaryFailure, 'unexpected_bounded_process_outcome') as raised:
+            boundary.boundary_checks(cluster)
+        self.assertTrue(observer.closed)
+        self.assertEqual(raised.exception.evidence['bounded_process_exercise']['host_pid_observation']['qualification'], 'not_qualified')
+
+    def test_real_observer_factory_loads_without_starting_host_access(self):
+        cluster = FakeCluster()
+        observer = boundary.create_process_observer(cluster, cluster.pod)
+        self.assertEqual(observer.__class__.__name__, 'ProcessObserver')
+        self.assertEqual(observer.pod_uid, cluster.pod['metadata']['uid'])
+        self.assertEqual(observer.close()['qualification'], 'not_qualified')
+        self.assertEqual(cluster.commands, [])
 
 
 if __name__ == '__main__':

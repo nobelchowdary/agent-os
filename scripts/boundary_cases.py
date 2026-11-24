@@ -1,12 +1,14 @@
 """Controlled, bounded probes for the disposable kind campaign.
 
 These checks measure individual paths. Missing positive controls never qualify a
-denial, and these checks cannot establish host escape resistance or a PID ceiling.
+denial, and these checks cannot establish host escape resistance or a guest PID ceiling.
 All fixture and submitted code runs through the required gVisor RuntimeClass.
 """
+import importlib.util
 import ipaddress
 import json
 import os
+from pathlib import Path
 import secrets
 
 NAMESPACE = 'agentos-workloads'
@@ -93,6 +95,7 @@ def fork_code():
 children = []
 result = {"stage": "complete", "attempt_limit": __LIMIT__, "spawned": 0, "resource_denied": False, "children_reaped": 0}
 print(PREFIX+json.dumps({"stage": "fork_progress", "spawned": 0}), flush=True)
+time.sleep(5)
 resource.setrlimit(resource.RLIMIT_AS, (128*1024*1024, 128*1024*1024))
 def deadline(*unused):
     raise TimeoutError("bounded_process_deadline")
@@ -236,6 +239,44 @@ def fixture_pod(namespace, name, image, code, node):
             'securityContext': {'readOnlyRootFilesystem': True, 'allowPrivilegeEscalation': False, 'capabilities': {'drop': ['ALL']}}}]}}
 
 
+def create_process_observer(cluster, pod):
+    spec = importlib.util.spec_from_file_location('agentos_process_probe', Path(__file__).with_name('process_probe.py'))
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper.ProcessObserver(cluster, pod)
+
+
+def safe_host_pid_evidence(value, pod):
+    """Bind numeric observations to this Pod without copying host output/paths."""
+    if not isinstance(value, dict):
+        value = {}
+    result = {'qualification': 'host_pid_limit_hit' if value.get('qualification') == 'host_pid_limit_hit' else 'not_qualified',
+              'pod_uid_verified': value.get('pod_uid_verified') is True,
+              'same_pod_uid': bool(pod.get('metadata', {}).get('uid')) and value.get('pod_uid') == pod['metadata']['uid'],
+              'same_selected_worker': bool(pod.get('spec', {}).get('nodeName')) and value.get('node_name') == pod['spec']['nodeName'],
+              'same_qos_class': bool(pod.get('status', {}).get('qosClass')) and value.get('qos_class') == pod['status']['qosClass'],
+              'readings_complete': value.get('readings_complete') is True, 'cgroup_gone': value.get('cgroup_gone') is True}
+    for field in ('pids_max', 'pids_current_peak', 'pids_peak', 'pids_events_max_before', 'pids_events_max_after',
+                  'pids_events_max_increase', 'sample_count'):
+        number = value.get(field)
+        result[field] = number if type(number) is int and 0 <= number <= 2**63 - 1 else None
+    return result
+
+
+def host_pid_limit_observed(value):
+    if value.get('qualification') != 'host_pid_limit_hit' or not all(value.get(field) is True for field in (
+            'pod_uid_verified', 'same_pod_uid', 'same_selected_worker', 'same_qos_class', 'readings_complete')):
+        return False
+    numbers = ('pids_max', 'pids_current_peak', 'pids_peak', 'pids_events_max_before', 'pids_events_max_after',
+               'pids_events_max_increase', 'sample_count')
+    if not all(type(value.get(field)) is int for field in numbers):
+        return False
+    return (value['pids_max'] == 128 and 0 < value['pids_current_peak'] <= value['pids_peak'] <= 128
+            and value['pids_events_max_after'] > value['pids_events_max_before'] >= 0
+            and value['pids_events_max_increase'] == value['pids_events_max_after'] - value['pids_events_max_before']
+            and value['sample_count'] >= 2)
+
+
 def process_exercise(cluster):
     # External clusters retain their administrator's node settings. A readable
     # finite kubelet limit is required before deliberately creating children.
@@ -249,27 +290,68 @@ def process_exercise(cluster):
         return {'qualification': 'not_qualified', 'reason': 'node_pid_prerequisite_unavailable',
                 'required_max_node_pod_pids_limit': 128}
     fork = cluster.submit(fork_code(), 'boundary-process-' + secrets.token_hex(8), timeout=45)
-    done = cluster.finish(fork, state=None, timeout=120)
-    diagnostics = {'qualification': 'not_qualified', 'node_pid_configuration_readback': True,
-                   'fixture': process_diagnostics(done)}
-    exit_code = done.get('result', {}).get('exit_code')
-    if done.get('state') != 'succeeded' or type(exit_code) is not int or exit_code != 0:
-        raise BoundaryFailure('unexpected_bounded_process_outcome', evidence=diagnostics)
+    pod = cluster.running_pod(fork)
+    inspect_pod(pod)
+    require(pod['spec'].get('nodeName') in cluster.worker_nodes, 'boundary_process_outside_selected_workers')
+    observer, observer_started, host = None, False, {}
     try:
-        result = result_from_output(done)
-        require(result.get('stage') == 'complete' and result.get('attempt_limit') == MAX_CHILDREN
-                and type(result.get('resource_denied')) is bool
-                and type(result.get('spawned')) is int and 0 < result['spawned'] <= MAX_CHILDREN
-                and type(result.get('children_reaped')) is int and result['children_reaped'] == result['spawned'],
-                'bounded_process_cleanup_failed')
-    except BoundaryFailure as failure:
-        raise BoundaryFailure(str(failure), evidence=diagnostics) from None
-    cluster.kubectl('wait', '--for=condition=Ready', 'nodes', '--all', '--timeout=60s')
-    healthy = cluster.submit('print("boundary-health-after-process-exercise", flush=True)',
-                             'boundary-health-' + secrets.token_hex(8), timeout=30)
-    cluster.finish(healthy, 'succeeded', timeout=120)
-    return dict({field: result[field] for field in ('stage', 'attempt_limit', 'spawned', 'children_reaped', 'resource_denied')},
-                qualification='exercise_only', node_and_followup_workload_healthy=True, node_pid_configuration_readback=True)
+        if getattr(cluster, 'dedicated_kind', False):
+            try:
+                observer = create_process_observer(cluster, pod)
+                observer.start()
+                observer_started = True
+            except Exception:
+                # Unknown/unsupported host observation is never evidence that
+                # an exit was caused by the configured Pod PID ceiling.
+                host = {}
+        done = cluster.finish(fork, state=None, timeout=120)
+    finally:
+        if observer is not None:
+            try:
+                observed_host = observer.close()
+                host = observed_host if observer_started else {}
+            except Exception:
+                host = {}
+    host = safe_host_pid_evidence(host, pod)
+    diagnostics = {'qualification': 'not_qualified', 'node_pid_configuration_readback': True,
+                   'fixture': process_diagnostics(done), 'host_pid_observation': host}
+    exit_code = done.get('result', {}).get('exit_code')
+    pressure_termination = (done.get('state') == 'failed' and done.get('reason_code') == 'task_error'
+                            and type(exit_code) is int and exit_code == 128 and host_pid_limit_observed(host))
+    if not pressure_termination and (done.get('state') != 'succeeded' or type(exit_code) is not int or exit_code != 0):
+        raise BoundaryFailure('unexpected_bounded_process_outcome', evidence=diagnostics)
+    if pressure_termination:
+        result = dict(diagnostics, qualification='host_limit_observed', outcome='sandbox_terminated_at_host_pid_limit')
+    else:
+        try:
+            observed = result_from_output(done)
+            require(observed.get('stage') == 'complete' and observed.get('attempt_limit') == MAX_CHILDREN
+                    and type(observed.get('resource_denied')) is bool
+                    and type(observed.get('spawned')) is int and 0 < observed['spawned'] <= MAX_CHILDREN
+                    and type(observed.get('children_reaped')) is int and observed['children_reaped'] == observed['spawned'],
+                    'bounded_process_cleanup_failed')
+        except BoundaryFailure as failure:
+            raise BoundaryFailure(str(failure), evidence=diagnostics) from None
+        result = dict({field: observed[field] for field in ('stage', 'attempt_limit', 'spawned', 'children_reaped', 'resource_denied')},
+                      qualification='exercise_only', node_pid_configuration_readback=True, host_pid_observation=host)
+    try:
+        # Resource pressure may terminate this sandbox. Both outcomes still
+        # require its cleanup and useful work through the actual runtime.
+        selected = sorted(cluster.worker_nodes | {cluster.api_node})
+        cluster.kubectl('wait', '--for=condition=Ready', 'nodes', *selected, '--timeout=60s')
+        cluster.drain()
+        health_code = ('import json,subprocess; print(' + repr(PREFIX) + '+json.dumps({"gvisor": '
+                       '"gvisor" in subprocess.check_output(["dmesg"]).decode().lower()}), flush=True)')
+        healthy = cluster.submit(health_code, 'boundary-health-' + secrets.token_hex(8), timeout=30)
+        healthy_done = cluster.finish(healthy, 'succeeded', timeout=120)
+        require(healthy_done.get('result', {}).get('exit_code') == 0
+                and result_from_output(healthy_done).get('gvisor') is True, 'boundary_followup_not_gvisor')
+        cluster.drain()
+        require(cluster.request('GET', '/readyz', retry=True).get('status') == 'ready', 'boundary_api_not_ready_after_process')
+    except Exception:
+        raise BoundaryFailure('boundary_process_recovery_failed', evidence=diagnostics) from None
+    return dict(result, selected_nodes_ready=True, process_and_followup_cleaned_up=True,
+                api_ready=True, followup_actual_gvisor_succeeded=True)
 
 
 def boundary_checks(cluster):

@@ -6,6 +6,7 @@ import tempfile
 import threading
 import tomllib
 import unittest
+from types import SimpleNamespace
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
@@ -24,6 +25,23 @@ campaign = module('kind_integration')
 
 
 class KindSafetyTests(unittest.TestCase):
+    def test_boundary_failure_evidence_survives_the_campaign_adapter(self):
+        class ProbeFailure(RuntimeError):
+            def __init__(self):
+                super().__init__('unexpected_bounded_process_outcome')
+                self.evidence = {'network': {'dns': {'qualification': 'measured_denial'}},
+                                 'bounded_process_exercise': {'fixture': {'exit_code': 128}}}
+        original = ProbeFailure()
+        def failed_probe(cluster): raise original
+        helper = SimpleNamespace(BoundaryFailure=ProbeFailure, boundary_checks=failed_probe)
+        spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda value: None))
+        with patch.object(campaign.importlib.util, 'spec_from_file_location', return_value=spec), \
+             patch.object(campaign.importlib.util, 'module_from_spec', return_value=helper), \
+             self.assertRaises(campaign.CheckFailed) as caught:
+            campaign.run_boundary_checks(object())
+        self.assertEqual(caught.exception.evidence, original.evidence)
+        self.assertEqual(str(caught.exception), 'unexpected_bounded_process_outcome')
+
     def test_cancellation_waits_for_handler_and_never_accepts_a_remaining_pod(self):
         class FakeCluster:
             def __init__(self, premature=False):
