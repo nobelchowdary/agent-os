@@ -5,6 +5,7 @@ same Pod cgroup's pids.events:max is evidence of a host PID-limit hit, not a
 guest process ceiling or a diagnosis of the task's exit status.
 """
 import math
+import json
 import re
 import threading
 import time
@@ -119,11 +120,32 @@ class ProcessObserver:
                 and 0 < self.duration_seconds <= self.MAX_DURATION_SECONDS, 'invalid_host_pid_observer_duration')
         require(type(self.interval_seconds) in (int, float) and math.isfinite(self.interval_seconds)
                 and .1 <= self.interval_seconds <= .25, 'invalid_host_pid_observer_interval')
-        uid = self.pod_uid.replace('-', '_')
-        if self.qos_class == 'Guaranteed':
-            self._cgroup = '/sys/fs/cgroup/kubepods.slice/kubepods-pod' + uid + '.slice'
-        else:
-            self._cgroup = '/sys/fs/cgroup/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod' + uid + '.slice'
+
+    def _resolve_cgroup(self):
+        try:
+            response = self.cluster.kubectl('get', '--raw', '/api/v1/nodes/' + self.node_name + '/proxy/configz',
+                                           '--request-timeout=1s', timeout=self.COMMAND_TIMEOUT_SECONDS + 1)
+            config = json.loads(response)['kubeletconfig']
+            require(isinstance(config, dict), 'host_pid_kubelet_config_unavailable')
+        except Exception:
+            raise ProcessProbeError('host_pid_kubelet_config_unavailable') from None
+        require(config.get('cgroupDriver') == 'systemd', 'host_pid_observer_requires_systemd_driver')
+        require(config.get('cgroupsPerQOS') is True, 'host_pid_observer_requires_qos_cgroups')
+        root = config.get('cgroupRoot', '')
+        require(isinstance(root, str) and (root == '' or root.startswith('/')),
+                'host_pid_observer_invalid_cgroup_root')
+        components = [] if root in ('', '/') else root[1:].split('/')
+        require(all(re.fullmatch(r'[A-Za-z0-9_]+', component) for component in components),
+                'host_pid_observer_invalid_cgroup_root')
+        # Kubernetes CgroupName.ToSystemd expands each cumulative component
+        # prefix into a slice. Restricted administrator root components need no
+        # escaping; only the validated Pod UUID uses Kubernetes '-' -> '_' form.
+        components.append('kubepods')
+        if self.qos_class == 'Burstable':
+            components.append('burstable')
+        components.append('pod' + self.pod_uid.replace('-', '_'))
+        self._cgroup = '/sys/fs/cgroup/' + '/'.join('-'.join(components[:index + 1]) + '.slice'
+                                                  for index in range(len(components)))
 
     def _command(self, args):
         try:
@@ -164,6 +186,7 @@ class ProcessObserver:
         self._deadline = time.monotonic() + self.duration_seconds
         try:
             self._validate()
+            self._resolve_cgroup()
             # Pin the immutable container ID after checking its kind ownership;
             # a later replacement with the same node name cannot retarget reads.
             result = self._command(['docker', 'inspect', '--format',

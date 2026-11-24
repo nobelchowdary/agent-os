@@ -16,6 +16,19 @@ PREFIX = 'AGENTOS_BOUNDARY_RESULT '
 MAX_CHILDREN = 64
 FIXTURE_PORT = 18081
 CONTROL_LABEL = 'agentos.dev/boundary-control'
+OBSERVER_ERRORS = frozenset({
+    'invalid_host_pid_counters', 'host_pid_observer_requires_dedicated_kind',
+    'host_pid_observer_requires_selected_worker', 'host_pid_observer_invalid_pod_uid',
+    'host_pid_observer_unsupported_qos', 'invalid_host_pid_observer_duration',
+    'invalid_host_pid_observer_interval', 'host_pid_observer_command_failed',
+    'host_pid_counters_unavailable', 'host_pid_observer_already_started_or_closed',
+    'host_pid_observer_wrong_kind_container', 'host_pid_counter_scope_not_hierarchical',
+    'host_pid_cgroup_absent_before_probe', 'host_pid_observer_start_failed',
+    'host_pid_observer_sample_failed', 'host_pid_observer_join_failed',
+    'host_pid_observer_did_not_stop', 'observer_creation_failed', 'observer_close_failed',
+    'host_pid_kubelet_config_unavailable', 'host_pid_observer_requires_systemd_driver',
+    'host_pid_observer_requires_qos_cgroups', 'host_pid_observer_invalid_cgroup_root',
+})
 
 
 class BoundaryFailure(RuntimeError):
@@ -246,17 +259,26 @@ def create_process_observer(cluster, pod):
     return helper.ProcessObserver(cluster, pod)
 
 
-def safe_host_pid_evidence(value, pod):
+def safe_host_pid_evidence(value, pod, observer_started=False, stage_errors=()):
     """Bind numeric observations to this Pod without copying host output/paths."""
     if not isinstance(value, dict):
         value = {}
-    result = {'qualification': 'host_pid_limit_hit' if value.get('qualification') == 'host_pid_limit_hit' else 'not_qualified',
+    reported_errors = value.get('errors', [])
+    if not isinstance(reported_errors, (list, tuple, set)):
+        reported_errors = []
+    errors = sorted({item for item in [*reported_errors, *stage_errors] if type(item) is str and item in OBSERVER_ERRORS})
+    complete = observer_started is True and value.get('readings_complete') is True and not errors
+    qos = pod.get('status', {}).get('qosClass')
+    result = {'qualification': 'host_pid_limit_hit' if complete and value.get('qualification') == 'host_pid_limit_hit' else 'not_qualified',
+              'observer_started': observer_started is True, 'errors': errors,
+              'pod_qos_class': qos if qos in ('Guaranteed', 'Burstable', 'BestEffort') else 'unrecognized',
+              'pod_uid_present': isinstance(pod.get('metadata', {}).get('uid'), str) and bool(pod['metadata']['uid']),
               'counter_scope': 'pod_subtree' if value.get('counter_scope') == 'pod_subtree' else 'unverified',
               'pod_uid_verified': value.get('pod_uid_verified') is True,
               'same_pod_uid': bool(pod.get('metadata', {}).get('uid')) and value.get('pod_uid') == pod['metadata']['uid'],
               'same_selected_worker': bool(pod.get('spec', {}).get('nodeName')) and value.get('node_name') == pod['spec']['nodeName'],
               'same_qos_class': bool(pod.get('status', {}).get('qosClass')) and value.get('qos_class') == pod['status']['qosClass'],
-              'readings_complete': value.get('readings_complete') is True, 'cgroup_gone': value.get('cgroup_gone') is True}
+              'readings_complete': complete, 'cgroup_gone': value.get('cgroup_gone') is True}
     for field in ('pids_max', 'pids_current_peak', 'pids_peak', 'pids_events_max_before', 'pids_events_max_after',
                   'pids_events_max_increase', 'sample_count'):
         number = value.get(field)
@@ -266,7 +288,7 @@ def safe_host_pid_evidence(value, pod):
 
 def host_pid_limit_observed(value):
     if value.get('qualification') != 'host_pid_limit_hit' or value.get('counter_scope') != 'pod_subtree' or not all(value.get(field) is True for field in (
-            'pod_uid_verified', 'same_pod_uid', 'same_selected_worker', 'same_qos_class', 'readings_complete')):
+            'observer_started', 'pod_uid_verified', 'same_pod_uid', 'same_selected_worker', 'same_qos_class', 'readings_complete')):
         return False
     numbers = ('pids_max', 'pids_current_peak', 'pids_peak', 'pids_events_max_before', 'pids_events_max_after',
                'pids_events_max_increase', 'sample_count')
@@ -294,26 +316,34 @@ def process_exercise(cluster):
     pod = cluster.running_pod(fork)
     inspect_pod(pod)
     require(pod['spec'].get('nodeName') in cluster.worker_nodes, 'boundary_process_outside_selected_workers')
-    observer, observer_started, host = None, False, {}
+    observer, observer_started, host, stage_errors = None, False, {}, []
     try:
         if getattr(cluster, 'dedicated_kind', False):
             try:
                 observer = create_process_observer(cluster, pod)
-                observer.start()
-                observer_started = True
             except Exception:
-                # Unknown/unsupported host observation is never evidence that
-                # an exit was caused by the configured Pod PID ceiling.
-                host = {}
+                observer = None
+            if observer is not None:
+                try:
+                    observer.start()
+                    observer_started = True
+                except Exception as failure:
+                    category = str(failure)
+                    stage_errors.append(category if category in OBSERVER_ERRORS else 'host_pid_observer_start_failed')
+            else:
+                stage_errors.append('observer_creation_failed')
         done = cluster.finish(fork, state=None, timeout=120)
     finally:
         if observer is not None:
             try:
                 observed_host = observer.close()
-                host = observed_host if observer_started else {}
+                if isinstance(observed_host, dict):
+                    host = observed_host
+                else:
+                    stage_errors.append('observer_close_failed')
             except Exception:
-                host = {}
-    host = safe_host_pid_evidence(host, pod)
+                stage_errors.append('observer_close_failed')
+    host = safe_host_pid_evidence(host, pod, observer_started=observer_started, stage_errors=stage_errors)
     diagnostics = {'qualification': 'not_qualified', 'node_pid_configuration_readback': True,
                    'fixture': process_diagnostics(done), 'host_pid_observation': host}
     exit_code = done.get('result', {}).get('exit_code')

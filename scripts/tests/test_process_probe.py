@@ -23,11 +23,17 @@ class FakeCluster:
     dedicated_kind = True
     worker_nodes = {'selected-worker'}
 
-    def __init__(self, samples=None, label='agentos-ci', mount_scope='hierarchical'):
+    def __init__(self, samples=None, label='agentos-ci', mount_scope='hierarchical', cgroup_root=''):
         self.samples = iter(samples or ['128 40 42 5'])
         self.label, self.calls = label, []
         self.mount_scope = mount_scope
+        self.config_calls = []
+        self.kubelet_config = {'cgroupDriver': 'systemd', 'cgroupsPerQOS': True, 'cgroupRoot': cgroup_root}
         self.sampled = threading.Event()
+
+    def kubectl(self, *args, **kwargs):
+        self.config_calls.append((args, kwargs))
+        return json.dumps({'kubeletconfig': self.kubelet_config})
 
     def command(self, args, timeout):
         self.calls.append((args, timeout))
@@ -85,6 +91,7 @@ class ProcessProbeTests(unittest.TestCase):
                     observer.start()
                 result = observer.close()
                 self.assertEqual(cluster.calls, [])
+                self.assertEqual(cluster.config_calls, [])
                 self.assertEqual(result['qualification'], 'not_qualified')
                 self.assertFalse(result['pod_uid_verified'])
                 self.assertIsNone(result['pod_uid'])
@@ -120,6 +127,44 @@ class ProcessProbeTests(unittest.TestCase):
                 self.assertFalse(observer._thread.is_alive())
                 self.assertNotIn('/sys/', json.dumps(result))
                 self.assertNotIn(CONTAINER_ID, json.dumps(result))
+
+    def test_effective_kubelet_cgroup_root_expands_every_systemd_slice_prefix(self):
+        uid = UID.replace('-', '_')
+        for root, qos, suffix in [
+                ('', 'Guaranteed', 'kubepods.slice/kubepods-pod' + uid + '.slice'),
+                ('/', 'Guaranteed', 'kubepods.slice/kubepods-pod' + uid + '.slice'),
+                ('/kubelet', 'Guaranteed', 'kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-pod' + uid + '.slice'),
+                ('/kubelet', 'Burstable', 'kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-burstable.slice/kubelet-kubepods-burstable-pod' + uid + '.slice'),
+                ('/parent_pool/kubelet', 'Guaranteed', 'parent_pool.slice/parent_pool-kubelet.slice/parent_pool-kubelet-kubepods.slice/parent_pool-kubelet-kubepods-pod' + uid + '.slice')]:
+            with self.subTest(root=root, qos=qos):
+                cluster = FakeCluster(cgroup_root=root)
+                observer = probe.ProcessObserver(cluster, pod(qos=qos)).start()
+                result = observer.close()
+                self.assertEqual(cluster.config_calls, [(('get', '--raw', '/api/v1/nodes/selected-worker/proxy/configz',
+                    '--request-timeout=1s'), {'timeout': 2})])
+                self.assertEqual(cluster.calls[2][0][-1], '/sys/fs/cgroup/' + suffix)
+                self.assertNotIn('kubelet.slice', json.dumps(result))
+
+    def test_unsupported_driver_qos_and_malformed_roots_refuse_before_host_reads(self):
+        for update, reason in [({'cgroupDriver': 'cgroupfs'}, 'requires_systemd_driver'),
+                               ({'cgroupsPerQOS': False}, 'requires_qos_cgroups'),
+                               *[({'cgroupRoot': root}, 'invalid_cgroup_root') for root in
+                                 ('relative', '/with-hyphen', '/with.slice', '/a//b', '/a/', '/a/../b', '/a\\x2db', '/a b', '/a;touch')]]:
+            with self.subTest(update=update):
+                cluster = FakeCluster()
+                cluster.kubelet_config.update(update)
+                observer = probe.ProcessObserver(cluster, pod())
+                with self.assertRaisesRegex(probe.ProcessProbeError, reason): observer.start()
+                result = observer.close()
+                self.assertEqual(cluster.calls, [])
+                self.assertFalse(result['readings_complete'])
+                self.assertEqual(result['qualification'], 'not_qualified')
+        cluster = FakeCluster()
+        observer = probe.ProcessObserver(cluster, pod())
+        with patch.object(cluster, 'kubectl', side_effect=RuntimeError('private-config')):
+            with self.assertRaisesRegex(probe.ProcessProbeError, 'kubelet_config_unavailable'): observer.start()
+        self.assertNotIn('private-config', json.dumps(observer.close()))
+        self.assertEqual(cluster.calls, [])
 
     def test_unknown_or_local_mount_scope_refuses_before_counter_reads(self):
         for scope in ('unknown', 'local_events', '', '/sys/fs/cgroup rw,pids_localevents'):

@@ -413,7 +413,73 @@ class BoundaryTests(unittest.TestCase):
                 boundary.os.environ, {}, clear=True), self.assertRaisesRegex(boundary.BoundaryFailure, 'unexpected_bounded_process_outcome') as raised:
             boundary.boundary_checks(cluster)
         self.assertTrue(observer.closed)
-        self.assertEqual(raised.exception.evidence['bounded_process_exercise']['host_pid_observation']['qualification'], 'not_qualified')
+        host = raised.exception.evidence['bounded_process_exercise']['host_pid_observation']
+        self.assertEqual(host['qualification'], 'not_qualified')
+        self.assertFalse(host['observer_started'])
+        self.assertFalse(host['readings_complete'])
+        self.assertEqual(host['errors'], ['host_pid_observer_start_failed'])
+        self.assertEqual(host['pids_max'], 128)  # Numeric diagnostics survive; failed startup cannot qualify them.
+
+    def test_only_exact_observer_error_categories_survive_safe_export(self):
+        pod = admitted_pod()
+        raw = observed_host_limit(pod)
+        secret = 'private-host-text-must-not-escape'
+        raw['errors'] = ['host_pid_counters_unavailable', 'host_pid_counters_unavailable', secret,
+                         'host_pid_counters_unavailable ' + secret, {'private': secret}]
+        raw['extra'] = secret
+        safe = boundary.safe_host_pid_evidence(raw, pod, observer_started=True)
+        self.assertEqual(safe['errors'], ['host_pid_counters_unavailable'])
+        self.assertEqual(safe['pod_qos_class'], 'Guaranteed')
+        self.assertTrue(safe['pod_uid_present'])
+        self.assertFalse(safe['readings_complete'])
+        self.assertEqual(safe['qualification'], 'not_qualified')
+        self.assertNotIn(secret, json.dumps(safe))
+        self.assertNotIn(pod['metadata']['uid'], json.dumps(safe))
+
+    def test_observer_stage_failures_are_fixed_categories_without_exception_text(self):
+        secret = 'private-import-or-host-exception-text'
+        for stage in ('creation_none', 'creation_exception', 'close_exception'):
+            cluster = FakeCluster()
+            cluster.dedicated_kind = True
+            observer = FakeObserver(observed_host_limit(cluster.pod))
+            factory = None if stage == 'creation_none' else observer
+            original = cluster.finish
+            def finish(run, state, timeout):
+                return original(run, state, timeout) if run['id'] != 2 else {
+                    'state': 'failed', 'reason_code': 'task_error', 'result': {'exit_code': 128}}
+            with self.subTest(stage=stage), patch.object(boundary, 'create_process_observer', return_value=factory) as create, patch.object(
+                    observer, 'close', wraps=observer.close) as close, patch.object(cluster, 'finish', side_effect=finish), patch.dict(
+                    boundary.os.environ, {}, clear=True):
+                if stage == 'creation_exception': create.side_effect = RuntimeError(secret)
+                if stage == 'close_exception': close.side_effect = RuntimeError(secret)
+                with self.assertRaisesRegex(boundary.BoundaryFailure, 'unexpected_bounded_process_outcome') as raised:
+                    boundary.boundary_checks(cluster)
+            host = raised.exception.evidence['bounded_process_exercise']['host_pid_observation']
+            self.assertEqual(host['errors'], ['observer_close_failed' if stage == 'close_exception' else 'observer_creation_failed'])
+            self.assertEqual(host['qualification'], 'not_qualified')
+            self.assertFalse(host['readings_complete'])
+            self.assertNotIn(secret, json.dumps(raised.exception.evidence))
+
+    def test_known_start_error_retains_close_diagnostics_but_not_qualification(self):
+        cluster = FakeCluster()
+        cluster.dedicated_kind = True
+        values = observed_host_limit(cluster.pod)
+        values['errors'] = ['host_pid_counter_scope_not_hierarchical']
+        observer = FakeObserver(values)
+        original = cluster.finish
+        def finish(run, state, timeout):
+            return original(run, state, timeout) if run['id'] != 2 else {
+                'state': 'failed', 'reason_code': 'task_error', 'result': {'exit_code': 128}}
+        with patch.object(boundary, 'create_process_observer', return_value=observer), patch.object(observer, 'start', side_effect=RuntimeError(
+                'host_pid_counter_scope_not_hierarchical')), patch.object(cluster, 'finish', side_effect=finish), patch.dict(
+                boundary.os.environ, {}, clear=True), self.assertRaises(boundary.BoundaryFailure) as raised:
+            boundary.boundary_checks(cluster)
+        host = raised.exception.evidence['bounded_process_exercise']['host_pid_observation']
+        self.assertEqual(host['errors'], ['host_pid_counter_scope_not_hierarchical'])
+        self.assertEqual(host['pids_events_max_increase'], 1)
+        self.assertFalse(host['observer_started'])
+        self.assertFalse(host['readings_complete'])
+        self.assertFalse(boundary.host_pid_limit_observed(host))
 
     def test_real_observer_factory_loads_without_starting_host_access(self):
         cluster = FakeCluster()
