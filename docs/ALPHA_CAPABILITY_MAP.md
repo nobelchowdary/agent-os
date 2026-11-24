@@ -8,6 +8,8 @@ Updated November 22 for [structured outcomes and drained offline recovery](robus
 
 Updated November 24 for the [staged reporting/deadline review](robustness/REPORTING_REVIEW_2026-11-24.md). Bounded reporting reads, result-before-cleanup phases and redacted Pod field diagnostics extend the execution service. New admissions default to a persisted Pod deadline; legacy records keep their Job clock. The selected future comparison gate is 20% lower fully accounted cost per correct task or 25% less median operator time. The linked report separates exact-source local execution evidence from contract tests and EKS work still pending.
 
+The same day's [timing follow-up](robustness/JOB_CONTROLLER_TIMING_2026-11-24.md) adds per-run observation boundaries, coverage and raw evidence from a 64-task diagnostic at `6389b17`. It changes no production Go behavior. The prewritten gate for an earlier-success path failed, so final Job outcome checks remain in place. The [EKS billing prerequisites](EVALUATION_RUNBOOK.md#billing-preparation-before-the-pilot) now distinguish activated Pod cost tags, verified identity-to-arm joins and complete cost accounting from declarations or missing billing rows.
+
 This document can be shared with a researcher reviewing the public repository. It distinguishes inspected local code, documented upstream capabilities and results that still need measurement. The November 19 upstream feature comparison below is historical research, not a measured comparison against the reference projects.
 
 ## What the alpha actually does

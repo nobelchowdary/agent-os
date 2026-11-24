@@ -1,6 +1,6 @@
 # 0008: Measure terminal observation before accelerating success
 
-Date: November 24, 2026. Status: proposed; the profiling change alone does not change runtime outcomes.
+Date: November 24, 2026. Status: evaluated; acceleration not adopted after the diagnostic. Runtime outcomes retain their existing contract.
 
 ## Context
 
@@ -25,3 +25,9 @@ A terminal Pod alone is not a general proof of the Job outcome: replacement exec
 Select any accelerated path from the durable record's explicit Pod scope. Verify the live Job against that durable execution and reject unsupported policies, conflicting conditions, active/terminating work, failed history, other success UIDs, Pod mutation, deletion, disruption, nonzero exits or restarts. Preserve result persistence before terminal state, cancellation CAS precedence, quotas and terminal immutability. Legacy/explicit Job clocks keep waiting for final Job conditions.
 
 Cleanup must make fresh ownership, policy and outcome checks before UID-fenced deletion. If early deletion prevents final Job completion evidence, label it censored/missing; never fabricate zero delay. A later contradiction remains a cleanup/operational diagnostic and cannot rewrite a terminal result. The final implementation and its acceptance evidence must be recorded before accepting this proposal.
+
+## Observed decision
+
+The diagnostic at [`6389b17`](https://github.com/nobelchowdary/agent-os/tree/6389b173db6afeae10b3022e6df8bbfa99f39e69), [run 45474391178](https://github.com/nobelchowdary/agent-os/actions/runs/45474391178), has complete, consistent coverage for all 64 successful executions and both watch drains. The median paired same-harness Job fraction is `0.485273128`, with 30 of 64 fractions above one half. Sequential polling materially affects its denominator; this is not a measure of Agent OS service time. The conventional median success-decision receipt to terminal-Job receipt interval is `0.5998715` seconds. Neither prewritten numerical condition passed. One mixed-source interval was negative and is retained in the evidence; no decision interval was negative.
+
+Keep runtime behavior unchanged. The profile supports substantial waiting before the Job's success decision but does not justify the proposed conservative acceleration under this rule. A terminal Pod without that decision requires a separate correctness contract and review; do not remove outcome checks to force a latency result. No candidate Go changes were committed. The [diagnostic report](../robustness/JOB_CONTROLLER_TIMING_2026-11-24.md) records the complete measurements, limits and next EKS gate. The external 20% cost / 25% operator-time thresholds are unchanged.

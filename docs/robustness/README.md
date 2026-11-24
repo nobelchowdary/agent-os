@@ -6,6 +6,8 @@ The [November 22 continuation report](PHASE_ZERO_2026-11-22.md) adds structured 
 
 The [November 24 reporting/deadline review](REPORTING_REVIEW_2026-11-24.md) records staged 64-task measurements, retained failure attempts, persisted Pod-clock compatibility, safe mismatch diagnostics and current validation status. It links the [image-reference upstream report draft](KIND_IMAGE_IMPORT_2026-11-24.md) and retained machine-readable evidence. These are narrower execution results; the full-requirement audit remains the frozen baseline below.
 
+The [Job-controller timing follow-up](JOB_CONTROLLER_TIMING_2026-11-24.md) retains all 64 diagnostic samples and the [prewritten conditional decision](../decisions/0008-earlier-success-observation.md). Neither acceleration gate passed; runtime outcome behavior remains unchanged. EKS billing preparation is documented, with no AWS account changes or new cost/competitive acceptance claim.
+
 At audited commit `e2ed1a4`, 41 whole requirements were Partial and 29 Missing. No whole requirement was accepted as Implemented against its full requested acceptance test. These labels include the EKS evidence gate and do not erase narrower implemented features. All EKS outcomes remain Not run. Machine-readable records are in `audit-core.json`, `audit-security.json` and `audit-platform.json`; do not silently update this frozen baseline after code changes.
 
 | Phase | Status | Next acceptance work |

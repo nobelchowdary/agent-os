@@ -35,6 +35,16 @@ Record the first provisioning/install session in a private timestamped explorato
 
 Agree on an AWS time/spend bound before provisioning, configure the owner's budget alerts, and use the pinned blueprint's cleanup procedure after the session. Retain billing and resource inventory through teardown; no cost figure or completed cleanup is implied by this plan. These repository tools do not provision or delete the AWS cluster.
 
+## Billing evidence before the cost experiment
+
+Prepare billing collection before the pilot. For shared EC2 workers, AWS split cost allocation data (SCAD) provides Pod allocations in legacy CUR or CUR 2.0 through Data Exports; it is absent from Cost Explorer. The management account, or a standalone account, must opt in to EKS under Cost Management preferences. Enable split cost allocation data and resource IDs in the selected report/export, choose hourly data, and retain its configuration and delivered manifests. Record the EKS measurement basis: resource requests allocates by requested CPU/memory; an actual-utilization option needs its documented telemetry setup and its operating cost. [AWS enablement](https://docs.aws.amazon.com/cur/latest/userguide/enabling-split-cost-allocation-data.html), [CUR 2.0 export settings](https://docs.aws.amazon.com/cur/latest/userguide/dataexports-create-standard.html)
+
+AWS documents up to 24 hours before SCAD appears in CUR. Kubernetes labels can become cost allocation tags, but their keys require activation by the payer/management account; discovery can take up to 24 hours and activation another 24 hours. Start with a small canary, wait for actual rows with the expected Pod identity and tags, and verify joins before the registered cost window. A day elapsed is not evidence that every short-lived Pod was captured. [Kubernetes label requirements and limits](https://docs.aws.amazon.com/cur/latest/userguide/split-cost-allocation-data-kubernetes-labels.html)
+
+Use the [runbook's billing preparation](EVALUATION_RUNBOOK.md#billing-preparation-before-the-pilot) to map both arms to the registered experiment/trials and exact Pod identities. The current collector does not attach one common arm label to every Pod; a label on an Agent OS Job is not inherited by an already created Pod. Preserve its recorded Pod UID/name and run-to-arm mapping instead of assuming automatic attribution. Keep unrelated work out of the accounting window or allocate it explicitly.
+
+The 20% gate concerns **fully accounted cost per correct task**, not just a Pod's allocated EC2 share. SCAD reallocates shared charges; it does not demonstrate a smaller bill. Include unused capacity and shared services, reconcile allocations to parent instance charges without counting both, and account separately for EKS, EBS/snapshots, networking/NAT, registry and observability/export costs. Missing billing rows or unresolved attribution keep `billing_complete=false`. A complete alternative billing ledger can support the gate without SCAD; it must establish the same lineage and coverage. [Split/unused cost fields](https://docs.aws.amazon.com/cur/latest/userguide/table-dictionary-cur2-split-line-item.html)
+
 ## Phase 0: capture the environment
 
 Before installing Agent OS, inspect the intended context and collect a private environment record:
