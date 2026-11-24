@@ -22,6 +22,11 @@ func (b *Backend) executionPods(ctx context.Context, id string, job *batchv1.Job
 	if err != nil {
 		return nil, err
 	}
+	return b.validateExecutionPods(ctx, job, pods)
+}
+
+func (b *Backend) validateExecutionPods(ctx context.Context, job *batchv1.Job, pods []corev1.Pod) ([]corev1.Pod, error) {
+	var err error
 	var runtimeClass *nodev1.RuntimeClass
 	for i := range pods {
 		if samePodExecution(&pods[i], &job.Spec.Template, nil) {

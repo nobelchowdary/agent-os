@@ -152,6 +152,7 @@ func (c *Controller) Reconcile(ctx context.Context) (result error) {
 	// Prioritize cancellation and bound concurrent Kubernetes calls. An unhealthy
 	// tenant must not serialize every other run behind its request timeouts.
 	sort.SliceStable(runs, func(i, j int) bool { return runs[i].State == model.Cancelling && runs[j].State != model.Cancelling })
+	observe := c.passObserver(ctx, runs)
 	work := make(chan model.Record, len(runs))
 	for _, r := range runs {
 		work <- r
@@ -182,7 +183,7 @@ func (c *Controller) Reconcile(ctx context.Context) (result error) {
 				if ctx.Err() != nil {
 					return
 				}
-				err := c.reconcileRunWithCleanup(ctx, r, handoffCleanup)
+				err := c.reconcileRunWithObserver(ctx, r, handoffCleanup, observe)
 				c.progress()
 				if err != nil && !errors.Is(err, store.ErrConflict) && !errors.Is(err, backend.ErrPending) {
 					failure := &operationError{category: "run_reconciliation_failed", runID: r.ID, cause: err}
@@ -223,12 +224,16 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 }
 
 func (c *Controller) reconcileRunWithCleanup(ctx context.Context, r model.Record, handoffCleanup func(model.Record) error) error {
+	return c.reconcileRunWithObserver(ctx, r, handoffCleanup, c.Backend.Observe)
+}
+
+func (c *Controller) reconcileRunWithObserver(ctx context.Context, r model.Record, handoffCleanup func(model.Record) error, observe func(context.Context, string) (backend.Observation, error)) error {
 	opctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	// A separate startup wait bounds unavailable infrastructure. Execution time
 	// is enforced by the persisted Kubernetes deadline, not the admission clock.
 	if (r.State == model.Queued || r.State == model.Starting || r.State == model.Activating) && time.Since(r.CreatedAt) > c.startupTimeout() {
-		ob, err := c.Backend.Observe(opctx, r.ID)
+		ob, err := observe(opctx, r.ID)
 		if err == nil && !validObservationCode(ob.State, ob.ReasonCode) {
 			return errors.New("invalid backend observation reason code")
 		}
@@ -263,7 +268,7 @@ func (c *Controller) reconcileRunWithCleanup(ctx context.Context, r model.Record
 	case model.Activating:
 		return c.activate(opctx, r)
 	case model.Running:
-		ob, err := c.Backend.Observe(opctx, r.ID)
+		ob, err := observe(opctx, r.ID)
 		if errors.Is(err, backend.ErrNotFound) {
 			_, err = c.Store.TransitionWithCode(r.ID, []model.State{model.Running}, model.Cancelling, "execution disappeared; automatic replay disabled", model.ReasonInfraFailure)
 			return err

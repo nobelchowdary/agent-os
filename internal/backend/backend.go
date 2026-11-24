@@ -39,6 +39,19 @@ type ObservedResultCapturer interface {
 	CaptureObservedResult(context.Context, string, Observation) (model.ExecutionResult, error)
 }
 
+// Observer reads execution evidence without changing compute. An observation
+// view is owned by one reconciliation pass and must not authorize mutations.
+type Observer interface {
+	Observe(context.Context, string) (Observation, error)
+}
+
+// ObservationBatcher optionally shares bounded read snapshots across a pass.
+// Preparation must not create, activate or delete compute. Existing backends
+// retain individual reads; cancellation and cleanup never use this view.
+type ObservationBatcher interface {
+	PrepareObservations(context.Context, []string) (Observer, error)
+}
+
 // Execution identifies a managed-label Job for reconciliation. Inventory is
 // not authority to adopt it: callers must match a durable record, then Cleanup
 // validates the current Job against that record before requesting deletion.

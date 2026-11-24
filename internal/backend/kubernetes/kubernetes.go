@@ -528,17 +528,37 @@ func (b *Backend) ownedJob(ctx context.Context, id string) (*batchv1.Job, error)
 	if err != nil {
 		return nil, fmt.Errorf("get execution: %w", err)
 	}
-	if job.Name != name || job.Namespace != b.namespace || job.Labels[RunIDLabel] != id || job.Labels[ManagedByLabel] != "agent-os" || job.Annotations[SpecHashAnnotation] == "" {
-		return nil, errors.New("refusing an execution not owned by Agent OS")
+	if err := b.validateOwnedJob(id, job); err != nil {
+		return nil, err
 	}
 	return job, nil
 }
 
-func (b *Backend) Observe(ctx context.Context, id string) (ob backend.Observation, observeErr error) {
+func (b *Backend) validateOwnedJob(id string, job *batchv1.Job) error {
+	name, err := jobName(id)
+	if err != nil {
+		return err
+	}
+	if job == nil || job.Name != name || job.Namespace != b.namespace || job.Labels[RunIDLabel] != id || job.Labels[ManagedByLabel] != "agent-os" || job.Annotations[SpecHashAnnotation] == "" {
+		return errors.New("refusing an execution not owned by Agent OS")
+	}
+	return nil
+}
+
+func (b *Backend) Observe(ctx context.Context, id string) (backend.Observation, error) {
 	job, err := b.ownedJob(ctx, id)
 	if err != nil {
 		return backend.Observation{}, err
 	}
+	return b.observeJob(id, job, func() ([]corev1.Pod, error) {
+		return b.executionPods(ctx, id, job)
+	})
+}
+
+// observeJob shares classification and capture receipts between direct reads
+// and a single pass's immutable read view. readPods still validates ownership
+// and the complete admitted execution boundary before returning evidence.
+func (b *Backend) observeJob(id string, job *batchv1.Job, readPods func() ([]corev1.Pod, error)) (ob backend.Observation, observeErr error) {
 	complete, failed, failureTarget, deadline := false, false, false, false
 	for _, condition := range job.Status.Conditions {
 		if condition.Status != corev1.ConditionTrue {
@@ -560,7 +580,7 @@ func (b *Backend) Observe(ctx context.Context, id string) (ob backend.Observatio
 	if complete && (failed || failureTarget) {
 		return backend.Observation{}, errors.New("execution has contradictory Job outcome conditions")
 	}
-	pods, podErr := b.executionPods(ctx, id, job)
+	pods, podErr := readPods()
 	defer func() {
 		if observeErr == nil && ob.State.Terminal() {
 			ob = b.resultObservation(id, job, pods, podErr, ob)
@@ -776,15 +796,25 @@ func (b *Backend) deleteJob(ctx context.Context, job *batchv1.Job) error {
 }
 
 func (b *Backend) runPods(ctx context.Context, id string, jobUID types.UID) ([]corev1.Pod, error) {
-	name, err := jobName(id)
-	if err != nil {
+	if _, err := jobName(id); err != nil {
 		return nil, err
 	}
 	pods, err := b.client.CoreV1().Pods(b.namespace).List(ctx, metav1.ListOptions{LabelSelector: labels.Set{RunIDLabel: id}.AsSelector().String()})
 	if err != nil {
 		return nil, fmt.Errorf("list execution pods: %w", err)
 	}
-	for _, pod := range pods.Items {
+	if err := b.validateRunPods(id, jobUID, pods.Items); err != nil {
+		return nil, err
+	}
+	return pods.Items, nil
+}
+
+func (b *Backend) validateRunPods(id string, jobUID types.UID, pods []corev1.Pod) error {
+	name, err := jobName(id)
+	if err != nil {
+		return err
+	}
+	for _, pod := range pods {
 		owned := false
 		for _, owner := range pod.OwnerReferences {
 			if owner.APIVersion == "batch/v1" && owner.Kind == "Job" && owner.Name == name && owner.Controller != nil && *owner.Controller && (jobUID == "" || owner.UID == jobUID) {
@@ -792,10 +822,10 @@ func (b *Backend) runPods(ctx context.Context, id string, jobUID types.UID) ([]c
 			}
 		}
 		if !owned || pod.Namespace != b.namespace || pod.Labels[ManagedByLabel] != "agent-os" {
-			return nil, errors.New("refusing a run-labeled Pod not owned by this execution")
+			return errors.New("refusing a run-labeled Pod not owned by this execution")
 		}
 	}
-	return pods.Items, nil
+	return nil
 }
 
 func (b *Backend) Cancel(ctx context.Context, id string) error {
