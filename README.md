@@ -8,7 +8,7 @@ This first alpha provides a runnable execution API and constrained Python/Node e
 
 ## Available in this version
 
-- Administrator-owned environments with digest-pinned images and fixed CPU, RAM, scratch-space and execution-time settings. New runs persist a Pod deadline clock; previously admitted runs retain their original Job clock.
+- Administrator-owned environments with digest-pinned images and fixed CPU, RAM, scratch-space and execution-time settings. New runs default to a persisted Pod clock; legacy records retain their Job clock.
 - Kubernetes Jobs with an administrator-selected gVisor or AWS Nitro isolated profile, non-root processes, read-only root filesystems, dropped capabilities and no workload Kubernetes token. Real kind/gVisor lifecycle checks have passed; EKS and Nitro remain unqualified.
 - Bearer-token authentication with tenant-scoped create, list, status, bounded logs and cancellation.
 - Durable run records, lifecycle events and bounded exit/output results using transactional embedded storage.
@@ -45,7 +45,7 @@ Submit this shape to `POST /v1/runs` in cluster execution mode. Image, resource 
 
 The API runs as one process/replica with a private bbolt database. Workload files are ephemeral; bounded output snapshots have administrator-controlled retention. Failed application work is not automatically retried. Cancellation is asynchronous; disappearing Kubernetes objects cannot prove a partitioned worker physically stopped. Finished Jobs and late creations for known terminal runs are cleaned up after result persistence; unknown labeled Jobs are reported for operator review.
 
-Workload networking is denied by default; the Nitro profile also requests a NIC-free guest and uses memory-backed scratch. Its trusted-parent/vsock and memory limits require separate qualification. A model/tool gateway, provider-spend enforcement, durable workspaces, integrated checkpoint recovery and Agent OS warm pools are future work. The [verified kind acceptance report](docs/robustness/LOCAL_ACCEPTANCE_7d4df23.md) covers real lifecycle/failure execution, selected controlled network denials and measured 16/64 concurrency. These results do not qualify EKS, comprehensive isolation or production operation. No token savings, cost or density advantage is claimed.
+Workload networking is denied by default; the Nitro profile also requests a NIC-free guest and uses memory-backed scratch. Its trusted-parent/vsock and memory limits require separate qualification. A model/tool gateway, provider-spend enforcement, durable workspaces, integrated checkpoint recovery and Agent OS warm pools are future work. The [historical Job-clock acceptance report](docs/robustness/LOCAL_ACCEPTANCE_7d4df23.md) covers real lifecycle/failure execution, selected controlled network denials and measured 16/64 concurrency. The [November 24 review](docs/robustness/REPORTING_REVIEW_2026-11-24.md) records staged reporting measurements, the Pod-clock change and its separate validation status. These results do not qualify EKS, comprehensive isolation or production operation. No token savings, cost or density advantage is claimed.
 
 ## Direction and contribution
 

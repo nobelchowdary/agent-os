@@ -1,0 +1,1007 @@
+{
+  "recorded_date": "2026-11-24",
+  "scope": "kind_gvisor_reporting_and_pod_deadline_evidence",
+  "comparison_qualification": "single_batch_per_stage_not_statistical_or_competitive",
+  "eks": "not_run",
+  "clock_skew": "unqualified",
+  "stages": [
+    {
+      "stage": "fresh_baseline",
+      "source_commit": "be04b710080365e0523ba90c36592931b8996529",
+      "run_id": 45454253248,
+      "run_url": "https://github.com/nobelchowdary/agent-os/actions/runs/45454253248",
+      "artifact_name": "kind-gvisor-result",
+      "artifact_result_sha256": "df17f2e60ec2006b7a5438219eb937aede1fcea5e62efb1450ecb85a4e67ed3e",
+      "deadline_scope": "legacy_job",
+      "campaign_status": "passed",
+      "case_status": "passed",
+      "observations": {
+        "target_concurrency": 64,
+        "peak_observed_running_containers": 64,
+        "peak_container_timestamp_overlap": 64,
+        "pod_exit_to_persisted_terminal_seconds": {
+          "count": 64,
+          "min": 6.913634,
+          "p50": 15.986948,
+          "p95": 23.128169,
+          "p99": 24.087409,
+          "max": 24.087409
+        },
+        "result_capture": {
+          "captured": 64,
+          "unavailable": 0,
+          "expired": 0,
+          "missing": 0,
+          "unknown": 0,
+          "output_complete": 64,
+          "output_incomplete": 0,
+          "output_completeness_missing": 0
+        },
+        "clock_basis": "node agent-container finishedAt to API terminal event at; clock skew unqualified",
+        "negative_lag_samples": 0,
+        "configuration": {
+          "max_active_per_tenant": 64,
+          "max_active_total": 64,
+          "kubernetes_qps": 50,
+          "kubernetes_burst": 100,
+          "startup_timeout_seconds": 240,
+          "templates": {
+            "python": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "bad-image": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "load": {
+              "resources": {
+                "cpu_milli": 25,
+                "memory_mib": 64,
+                "disk_mib": 16
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            }
+          },
+          "resource_quota": {
+            "count/jobs.batch": "64",
+            "limits.cpu": "8",
+            "limits.memory": "8Gi",
+            "pods": "64",
+            "requests.cpu": "8",
+            "requests.memory": "8Gi"
+          },
+          "api_kubernetes_egress": null
+        }
+      },
+      "run_attempt": 1
+    },
+    {
+      "stage": "runtimeclass_cache",
+      "source_commit": "96e25656137785471801b6f9c2f8e058767d8c70",
+      "run_id": 45452728380,
+      "run_url": "https://github.com/nobelchowdary/agent-os/actions/runs/45452728380",
+      "artifact_name": "kind-gvisor-result",
+      "artifact_result_sha256": "fbdbe7a630688f557c6044ed2e303ebfcd29c0503c7a99c0b7bac3e2b85ce086",
+      "deadline_scope": "legacy_job",
+      "campaign_status": "passed",
+      "case_status": "passed",
+      "observations": {
+        "target_concurrency": 64,
+        "peak_observed_running_containers": 64,
+        "peak_container_timestamp_overlap": 64,
+        "pod_exit_to_persisted_terminal_seconds": {
+          "count": 64,
+          "min": 6.050702,
+          "p50": 14.328222,
+          "p95": 19.546755,
+          "p99": 20.447568,
+          "max": 20.447568
+        },
+        "result_capture": {
+          "captured": 64,
+          "unavailable": 0,
+          "expired": 0,
+          "missing": 0,
+          "unknown": 0,
+          "output_complete": 64,
+          "output_incomplete": 0,
+          "output_completeness_missing": 0
+        },
+        "clock_basis": "node agent-container finishedAt to API terminal event at; clock skew unqualified",
+        "negative_lag_samples": 0,
+        "configuration": {
+          "max_active_per_tenant": 64,
+          "max_active_total": 64,
+          "kubernetes_qps": 50,
+          "kubernetes_burst": 100,
+          "startup_timeout_seconds": 240,
+          "templates": {
+            "python": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "bad-image": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "load": {
+              "resources": {
+                "cpu_milli": 25,
+                "memory_mib": 64,
+                "disk_mib": 16
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            }
+          },
+          "resource_quota": {
+            "count/jobs.batch": "64",
+            "limits.cpu": "8",
+            "limits.memory": "8Gi",
+            "pods": "64",
+            "requests.cpu": "8",
+            "requests.memory": "8Gi"
+          },
+          "api_kubernetes_egress": null
+        }
+      },
+      "run_attempt": 1
+    },
+    {
+      "stage": "observed_capture",
+      "source_commit": "39afaa0e749173189a33e69b9363be2ad839e256",
+      "run_id": 45454246627,
+      "run_url": "https://github.com/nobelchowdary/agent-os/actions/runs/45454246627",
+      "artifact_name": "kind-gvisor-result",
+      "artifact_result_sha256": "c1d0cec3dbb13339086af250d8932249eaf3083f5e7718aa144d2e6ab7ff74f0",
+      "deadline_scope": "legacy_job",
+      "campaign_status": "passed",
+      "case_status": "passed",
+      "observations": {
+        "target_concurrency": 64,
+        "peak_observed_running_containers": 64,
+        "peak_container_timestamp_overlap": 64,
+        "pod_exit_to_persisted_terminal_seconds": {
+          "count": 64,
+          "min": 4.836299,
+          "p50": 13.542945,
+          "p95": 18.962724,
+          "p99": 19.02171,
+          "max": 19.02171
+        },
+        "result_capture": {
+          "captured": 64,
+          "unavailable": 0,
+          "expired": 0,
+          "missing": 0,
+          "unknown": 0,
+          "output_complete": 64,
+          "output_incomplete": 0,
+          "output_completeness_missing": 0
+        },
+        "clock_basis": "node agent-container finishedAt to API terminal event at; clock skew unqualified",
+        "negative_lag_samples": 0,
+        "configuration": {
+          "max_active_per_tenant": 64,
+          "max_active_total": 64,
+          "kubernetes_qps": 50,
+          "kubernetes_burst": 100,
+          "startup_timeout_seconds": 240,
+          "templates": {
+            "python": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "bad-image": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "load": {
+              "resources": {
+                "cpu_milli": 25,
+                "memory_mib": 64,
+                "disk_mib": 16
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            }
+          },
+          "resource_quota": {
+            "count/jobs.batch": "64",
+            "limits.cpu": "8",
+            "limits.memory": "8Gi",
+            "pods": "64",
+            "requests.cpu": "8",
+            "requests.memory": "8Gi"
+          },
+          "api_kubernetes_egress": null
+        }
+      },
+      "run_attempt": 1
+    },
+    {
+      "stage": "terminal_cleanup_phase",
+      "source_commit": "67cf56a4d8e80ee154bbc91684bd42de9ffb708f",
+      "run_id": 45456345462,
+      "run_url": "https://github.com/nobelchowdary/agent-os/actions/runs/45456345462",
+      "artifact_name": "kind-gvisor-result",
+      "artifact_result_sha256": "46233bc9c20a593e610d1ee256403c5206546d5fe5329f04a7580139d47045f6",
+      "deadline_scope": "legacy_job",
+      "campaign_status": "passed",
+      "case_status": "passed",
+      "observations": {
+        "target_concurrency": 64,
+        "peak_observed_running_containers": 64,
+        "peak_container_timestamp_overlap": 64,
+        "pod_exit_to_persisted_terminal_seconds": {
+          "count": 64,
+          "min": 5.435113,
+          "p50": 13.235176,
+          "p95": 19.614985,
+          "p99": 19.674955,
+          "max": 19.674955
+        },
+        "result_capture": {
+          "captured": 64,
+          "unavailable": 0,
+          "expired": 0,
+          "missing": 0,
+          "unknown": 0,
+          "output_complete": 64,
+          "output_incomplete": 0,
+          "output_completeness_missing": 0
+        },
+        "clock_basis": "node agent-container finishedAt to API terminal event at; clock skew unqualified",
+        "negative_lag_samples": 0,
+        "configuration": {
+          "max_active_per_tenant": 64,
+          "max_active_total": 64,
+          "kubernetes_qps": 50,
+          "kubernetes_burst": 100,
+          "startup_timeout_seconds": 240,
+          "templates": {
+            "python": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "bad-image": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "load": {
+              "resources": {
+                "cpu_milli": 25,
+                "memory_mib": 64,
+                "disk_mib": 16
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            }
+          },
+          "resource_quota": {
+            "count/jobs.batch": "64",
+            "limits.cpu": "8",
+            "limits.memory": "8Gi",
+            "pods": "64",
+            "requests.cpu": "8",
+            "requests.memory": "8Gi"
+          },
+          "api_kubernetes_egress": null
+        }
+      },
+      "run_attempt": 1
+    },
+    {
+      "stage": "batched_observations",
+      "source_commit": "8f5699d2c4614863cfd69defa0e6fb1f61d45cb6",
+      "run_id": 45459175429,
+      "run_attempt": 2,
+      "run_url": "https://github.com/nobelchowdary/agent-os/actions/runs/45459175429/attempts/2",
+      "artifact_name": "kind-gvisor-result",
+      "artifact_id": 14953670015,
+      "artifact_result_sha256": "aa1b5a270384c251b3f3844749e62bc86200fd2c3a4689a0091e24acab6e782d",
+      "deadline_scope": "legacy_job",
+      "campaign_status": "passed",
+      "case_status": "passed",
+      "observations": {
+        "target_concurrency": 64,
+        "peak_observed_running_containers": 64,
+        "peak_container_timestamp_overlap": 64,
+        "pod_exit_to_persisted_terminal_seconds": {
+          "count": 64,
+          "min": 4.76945,
+          "p50": 9.75729,
+          "p95": 14.84888,
+          "p99": 15.055271,
+          "max": 15.055271
+        },
+        "result_capture": {
+          "captured": 64,
+          "unavailable": 0,
+          "expired": 0,
+          "missing": 0,
+          "unknown": 0,
+          "output_complete": 64,
+          "output_incomplete": 0,
+          "output_completeness_missing": 0
+        },
+        "clock_basis": "node agent-container finishedAt to API terminal event at; clock skew unqualified",
+        "negative_lag_samples": 0,
+        "configuration": {
+          "max_active_per_tenant": 64,
+          "max_active_total": 64,
+          "kubernetes_qps": 50,
+          "kubernetes_burst": 100,
+          "startup_timeout_seconds": 240,
+          "templates": {
+            "python": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "bad-image": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            },
+            "load": {
+              "resources": {
+                "cpu_milli": 25,
+                "memory_mib": 64,
+                "disk_mib": 16
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "max_timeout_seconds": 300
+            }
+          },
+          "resource_quota": {
+            "count/jobs.batch": "64",
+            "limits.cpu": "8",
+            "limits.memory": "8Gi",
+            "pods": "64",
+            "requests.cpu": "8",
+            "requests.memory": "8Gi"
+          },
+          "api_kubernetes_egress": null
+        }
+      }
+    }
+  ],
+  "failed_attempts": [
+    {
+      "run_id": 45459175429,
+      "attempt": 1,
+      "source_commit": "8f5699d2c4614863cfd69defa0e6fb1f61d45cb6",
+      "artifact_result_sha256": "3ffefc0979bf97f64ae242d8399087f82875cda15a2ef313829199a75ebdc271",
+      "case": {
+        "case": "actual_gvisor_canary",
+        "status": "failed",
+        "seconds": 21.98,
+        "failure": "wrong_terminal_state"
+      },
+      "recent_run_outcomes": [
+        {
+          "state": "failed",
+          "reason_code": "infra_failure",
+          "result_status": "unavailable",
+          "exit_code": null,
+          "output_complete": false,
+          "missing_dmesg_command": false,
+          "denied_dmesg": false
+        }
+      ],
+      "load_samples": 0,
+      "observed_error": "containerd referenced missing temporary image import name during container creation"
+    },
+    {
+      "run_id": 45459345437,
+      "attempt": 1,
+      "source_commit": "bffa26fd855fb80cb0b26ee5ed7a177b05c80212",
+      "artifact_result_sha256": "1a0a77d5d1741a0535b2534fa8e2597d07e4fc1c578a2e0a1fc49c97183fff4a",
+      "case": {
+        "case": "actual_gvisor_canary",
+        "status": "failed",
+        "seconds": 21.481,
+        "failure": "wrong_terminal_state"
+      },
+      "recent_run_outcomes": [
+        {
+          "state": "failed",
+          "reason_code": "infra_failure",
+          "result_status": "unavailable",
+          "exit_code": null,
+          "output_complete": false,
+          "missing_dmesg_command": false,
+          "denied_dmesg": false
+        }
+      ],
+      "load_samples": 0,
+      "observed_error": "containerd referenced missing temporary image import name during container creation"
+    }
+  ],
+  "full_pod_clock_acceptance": {
+    "run_id": 45459345437,
+    "run_attempt": 2,
+    "head_sha": "bffa26fd855fb80cb0b26ee5ed7a177b05c80212",
+    "artifact_id": 14956806017,
+    "artifact_created_at": "2026-11-24T19:20:09Z",
+    "run_started_at": "2026-11-24T18:30:04Z",
+    "run_url": "https://github.com/nobelchowdary/agent-os/actions/runs/45459345437/attempts/2",
+    "artifact_name": "kind-gvisor-result",
+    "artifact_result_sha256": "072ca13eb107655a314413f588cbf933f55e19fa1abcaf3e9f666eb399f43448",
+    "campaign_status": "passed",
+    "selection": "all",
+    "deadline_scope": "pod",
+    "sequential_runs": 200,
+    "crash_submits": 500,
+    "network_isolation": "not_qualified",
+    "cluster_qualification": "not_qualified",
+    "eks": "not_run",
+    "configuration": {
+      "max_active_per_tenant": 4,
+      "max_active_total": 4,
+      "kubernetes_qps": 50,
+      "kubernetes_burst": 100,
+      "startup_timeout_seconds": 20,
+      "templates": {
+        "python": {
+          "resources": {
+            "cpu_milli": 100,
+            "memory_mib": 256,
+            "disk_mib": 32
+          },
+          "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+          "termination_grace_period_seconds": 10,
+          "deadline_scope": "pod",
+          "max_timeout_seconds": 300
+        },
+        "bad-image": {
+          "resources": {
+            "cpu_milli": 100,
+            "memory_mib": 256,
+            "disk_mib": 32
+          },
+          "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "termination_grace_period_seconds": 10,
+          "deadline_scope": "pod",
+          "max_timeout_seconds": 300
+        },
+        "load": {
+          "resources": {
+            "cpu_milli": 25,
+            "memory_mib": 64,
+            "disk_mib": 16
+          },
+          "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+          "termination_grace_period_seconds": 10,
+          "deadline_scope": "pod",
+          "max_timeout_seconds": 300
+        }
+      },
+      "resource_quota": {
+        "count/jobs.batch": "64",
+        "limits.cpu": "8",
+        "limits.memory": "8Gi",
+        "pods": "16",
+        "requests.cpu": "8",
+        "requests.memory": "8Gi"
+      },
+      "api_kubernetes_egress": null
+    },
+    "cases": [
+      {
+        "case": "actual_gvisor_canary",
+        "status": "passed",
+        "seconds": 15.867
+      },
+      {
+        "case": "boundary_checks",
+        "status": "passed",
+        "seconds": 115.873,
+        "observations": {
+          "qualification": "partial",
+          "network": {
+            "controlled_peer": {
+              "qualification": "measured_denial",
+              "control_reachable_before": true,
+              "control_reachable_after": true,
+              "workload_reachable": false
+            },
+            "kubernetes_api": {
+              "qualification": "measured_denial",
+              "control_reachable_before": true,
+              "control_reachable_after": true,
+              "workload_reachable": false
+            },
+            "dns": {
+              "qualification": "measured_denial",
+              "control_reachable_before": true,
+              "control_reachable_after": true,
+              "workload_reachable": false
+            },
+            "metadata": {
+              "qualification": "measured_denial",
+              "control_reachable_before": true,
+              "control_reachable_after": true,
+              "workload_reachable": false
+            },
+            "external_control": {
+              "qualification": "not_qualified",
+              "reason": "operator_control_not_supplied"
+            }
+          },
+          "control_node_count": 2,
+          "admitted_pod_checks": {
+            "required_runtime": true,
+            "host_namespaces_disabled": true,
+            "host_and_token_volumes_absent": true,
+            "nonroot_no_capabilities_readonly_root": true
+          },
+          "process_and_filesystem": {
+            "uid_nonzero": true,
+            "service_account_token_absent": true,
+            "root_write_denied": true,
+            "root_mount_read_only": true,
+            "pid_one_is_python": true
+          },
+          "host_escape_resistance": "not_qualified",
+          "guest_pid_ceiling": "not_qualified",
+          "limits": [
+            "No controlled host marker or escape exploit is exercised.",
+            "A bounded fork loop and node PID configuration do not establish a guest PID ceiling.",
+            "Network results apply only to the named paths and observed control windows."
+          ],
+          "bounded_process_exercise": {
+            "qualification": "host_limit_observed",
+            "node_pid_configuration_readback": true,
+            "fixture": {
+              "state": "failed",
+              "reason_code": "task_error",
+              "exit_code": 128,
+              "last_progress_spawned": 40,
+              "last_progress_stage": "fork_progress",
+              "error_markers": {
+                "resource_temporarily_unavailable": false,
+                "cannot_allocate_memory": false,
+                "traceback": false,
+                "timeout": false,
+                "memory_error": false,
+                "failed_to_create_os_thread": false,
+                "runtime_fatal": false
+              }
+            },
+            "host_pid_observation": {
+              "qualification": "host_pid_limit_hit",
+              "observer_started": true,
+              "errors": [],
+              "pod_qos_class": "Guaranteed",
+              "pod_uid_present": true,
+              "counter_scope": "pod_subtree",
+              "pod_uid_verified": true,
+              "same_pod_uid": true,
+              "same_selected_worker": true,
+              "same_qos_class": true,
+              "readings_complete": true,
+              "cgroup_gone": true,
+              "pids_max": 128,
+              "pids_current_peak": 128,
+              "pids_peak": 128,
+              "pids_events_max_before": 0,
+              "pids_events_max_after": 1,
+              "pids_events_max_increase": 1,
+              "sample_count": 130
+            },
+            "outcome": "failed_execution_with_host_pid_limit_event",
+            "selected_nodes_ready": true,
+            "process_and_followup_cleaned_up": true,
+            "api_ready": true,
+            "followup_actual_gvisor_succeeded": true
+          }
+        }
+      },
+      {
+        "case": "unknown_suspended_job_reported_not_adopted",
+        "status": "passed",
+        "seconds": 2.379
+      },
+      {
+        "case": "exit_zero",
+        "status": "passed",
+        "seconds": 5.699
+      },
+      {
+        "case": "exit_three_retained_once_after_restart",
+        "status": "passed",
+        "seconds": 12.446
+      },
+      {
+        "case": "bounded_head_and_tail",
+        "status": "passed",
+        "seconds": 6.972
+      },
+      {
+        "case": "memory_limit",
+        "status": "passed",
+        "seconds": 106.922
+      },
+      {
+        "case": "image_pull_start_bound",
+        "status": "passed",
+        "seconds": 21.902,
+        "observations": {
+          "id": "1c43f9013a46c8ad49178621e4db9807",
+          "tenant_id": "local",
+          "spec": {
+            "template": "bad-image",
+            "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "runtime_class": "gvisor",
+            "runtime_profile": {
+              "kind": "gvisor",
+              "runtime_class": "gvisor",
+              "required_handler": "runsc"
+            },
+            "command": [
+              "python",
+              "-u",
+              "-c",
+              "pass"
+            ],
+            "resources": {
+              "cpu_milli": 100,
+              "memory_mib": 256,
+              "disk_mib": 32
+            },
+            "timeout_seconds": 180,
+            "deadline_scope": "pod",
+            "termination_grace_period_seconds": 10
+          },
+          "state": "failed",
+          "reason": "startup wait exceeded",
+          "reason_code": "image_pull_failed",
+          "created_at": "2026-11-24T18:36:58.429144735Z",
+          "updated_at": "2026-11-24T18:37:20.143317764Z",
+          "events": [
+            {
+              "at": "2026-11-24T18:36:58.429144735Z",
+              "state": "queued"
+            },
+            {
+              "at": "2026-11-24T18:36:58.434116327Z",
+              "state": "starting"
+            },
+            {
+              "at": "2026-11-24T18:36:58.441505796Z",
+              "state": "activating"
+            },
+            {
+              "at": "2026-11-24T18:36:58.452862484Z",
+              "state": "running",
+              "reason": "execution dispatched"
+            },
+            {
+              "at": "2026-11-24T18:37:19.142704004Z",
+              "state": "cancelling",
+              "reason": "startup wait exceeded",
+              "reason_code": "image_pull_failed"
+            },
+            {
+              "at": "2026-11-24T18:37:20.143317764Z",
+              "state": "failed",
+              "reason": "startup wait exceeded",
+              "reason_code": "image_pull_failed"
+            }
+          ],
+          "result": {
+            "output_head": "",
+            "output_tail": "",
+            "output_truncated": false,
+            "output_complete": false,
+            "status": "unavailable",
+            "captured_at": "2026-11-24T18:37:19.143335205Z",
+            "expires_at": "2026-11-25T18:37:19.143335205Z"
+          }
+        }
+      },
+      {
+        "case": "disk_reason_observed",
+        "reason_code": "evicted",
+        "status": "observed"
+      },
+      {
+        "case": "disk_limit",
+        "status": "passed",
+        "seconds": 40.925
+      },
+      {
+        "case": "node_drain",
+        "status": "passed",
+        "seconds": 5.174
+      },
+      {
+        "case": "deadline_with_api_scaled_zero",
+        "status": "passed",
+        "seconds": 67.57,
+        "observations": {
+          "deadline_scope": "pod",
+          "deadline_boundary": "pod_start_time",
+          "api_replicas_during_deadline": 0,
+          "terminal_job_observed": true
+        }
+      },
+      {
+        "case": "finished_kubelet_unavailable",
+        "status": "passed",
+        "seconds": 66.496,
+        "observations": {
+          "status": "passed",
+          "terminal_state": "succeeded",
+          "result_status": "unavailable",
+          "exit_code": 0,
+          "api_ready": true
+        }
+      },
+      {
+        "case": "cancellation_observation",
+        "status": "observed",
+        "handler_ready": true,
+        "configured_grace_seconds": 10,
+        "observed_delete_grace_seconds": [
+          10
+        ],
+        "stop_seconds": 12.029
+      },
+      {
+        "case": "cancel_ignores_sigterm_until_gone",
+        "status": "passed",
+        "seconds": 18.602
+      },
+      {
+        "case": "deleted_job_no_replay",
+        "status": "passed",
+        "seconds": 3.971
+      },
+      {
+        "case": "sequential_200_cleanup",
+        "status": "passed",
+        "seconds": 1185.074
+      },
+      {
+        "case": "crash_count",
+        "api_pod_deletions": 76,
+        "status": "observed"
+      },
+      {
+        "case": "crash_during_500_idempotent_submits",
+        "status": "passed",
+        "seconds": 781.678
+      },
+      {
+        "case": "load_16",
+        "status": "passed",
+        "seconds": 193.517,
+        "observations": {
+          "target_concurrency": 16,
+          "peak_observed_running_containers": 16,
+          "peak_container_timestamp_overlap": 16,
+          "pod_exit_to_persisted_terminal_seconds": {
+            "count": 16,
+            "min": 4.1064,
+            "p50": 4.113417,
+            "p95": 5.087005,
+            "p99": 5.087005,
+            "max": 5.087005
+          },
+          "result_capture": {
+            "captured": 16,
+            "unavailable": 0,
+            "expired": 0,
+            "missing": 0,
+            "unknown": 0,
+            "output_complete": 16,
+            "output_incomplete": 0,
+            "output_completeness_missing": 0
+          },
+          "clock_basis": "node agent-container finishedAt to API terminal event at; clock skew unqualified",
+          "negative_lag_samples": 0,
+          "configuration": {
+            "max_active_per_tenant": 16,
+            "max_active_total": 16,
+            "kubernetes_qps": 50,
+            "kubernetes_burst": 100,
+            "startup_timeout_seconds": 240,
+            "templates": {
+              "python": {
+                "resources": {
+                  "cpu_milli": 100,
+                  "memory_mib": 256,
+                  "disk_mib": 32
+                },
+                "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+                "termination_grace_period_seconds": 10,
+                "deadline_scope": "pod",
+                "max_timeout_seconds": 300
+              },
+              "bad-image": {
+                "resources": {
+                  "cpu_milli": 100,
+                  "memory_mib": 256,
+                  "disk_mib": 32
+                },
+                "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "termination_grace_period_seconds": 10,
+                "deadline_scope": "pod",
+                "max_timeout_seconds": 300
+              },
+              "load": {
+                "resources": {
+                  "cpu_milli": 25,
+                  "memory_mib": 64,
+                  "disk_mib": 16
+                },
+                "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+                "termination_grace_period_seconds": 10,
+                "deadline_scope": "pod",
+                "max_timeout_seconds": 300
+              }
+            },
+            "resource_quota": {
+              "count/jobs.batch": "64",
+              "limits.cpu": "8",
+              "limits.memory": "8Gi",
+              "pods": "16",
+              "requests.cpu": "8",
+              "requests.memory": "8Gi"
+            },
+            "api_kubernetes_egress": null
+          }
+        }
+      },
+      {
+        "case": "load_64",
+        "status": "passed",
+        "seconds": 205.029,
+        "observations": {
+          "target_concurrency": 64,
+          "peak_observed_running_containers": 64,
+          "peak_container_timestamp_overlap": 64,
+          "pod_exit_to_persisted_terminal_seconds": {
+            "count": 64,
+            "min": 6.652627,
+            "p50": 10.638093,
+            "p95": 16.621299,
+            "p99": 16.623873,
+            "max": 16.623873
+          },
+          "result_capture": {
+            "captured": 64,
+            "unavailable": 0,
+            "expired": 0,
+            "missing": 0,
+            "unknown": 0,
+            "output_complete": 64,
+            "output_incomplete": 0,
+            "output_completeness_missing": 0
+          },
+          "clock_basis": "node agent-container finishedAt to API terminal event at; clock skew unqualified",
+          "negative_lag_samples": 0,
+          "configuration": {
+            "max_active_per_tenant": 64,
+            "max_active_total": 64,
+            "kubernetes_qps": 50,
+            "kubernetes_burst": 100,
+            "startup_timeout_seconds": 240,
+            "templates": {
+              "python": {
+                "resources": {
+                  "cpu_milli": 100,
+                  "memory_mib": 256,
+                  "disk_mib": 32
+                },
+                "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+                "termination_grace_period_seconds": 10,
+                "deadline_scope": "pod",
+                "max_timeout_seconds": 300
+              },
+              "bad-image": {
+                "resources": {
+                  "cpu_milli": 100,
+                  "memory_mib": 256,
+                  "disk_mib": 32
+                },
+                "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "termination_grace_period_seconds": 10,
+                "deadline_scope": "pod",
+                "max_timeout_seconds": 300
+              },
+              "load": {
+                "resources": {
+                  "cpu_milli": 25,
+                  "memory_mib": 64,
+                  "disk_mib": 16
+                },
+                "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+                "termination_grace_period_seconds": 10,
+                "deadline_scope": "pod",
+                "max_timeout_seconds": 300
+              }
+            },
+            "resource_quota": {
+              "count/jobs.batch": "64",
+              "limits.cpu": "8",
+              "limits.memory": "8Gi",
+              "pods": "64",
+              "requests.cpu": "8",
+              "requests.memory": "8Gi"
+            },
+            "api_kubernetes_egress": null
+          }
+        }
+      }
+    ]
+  }
+}
