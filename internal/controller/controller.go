@@ -270,7 +270,7 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 		// Persist a bounded snapshot before any deletion. A running process
 		// may not have a final exit code yet; logging failure must not prevent
 		// an authorized cancellation from stopping execution.
-		captureErr := c.captureResult(opctx, r, true, time.Time{})
+		captureErr := c.captureResult(opctx, r, true, time.Time{}, nil)
 		// Give stopping its own finite budget. A log-read timeout must not
 		// leave every cleanup attempt with an already expired context.
 		cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -339,7 +339,7 @@ func (c *Controller) observe(ctx context.Context, r model.Record, ob backend.Obs
 		code = model.DefaultReasonCode(ob.State)
 	}
 	if ob.State.Terminal() {
-		if err := c.captureResult(ctx, r, false, ob.FinishedAt); err != nil {
+		if err := c.captureResult(ctx, r, false, ob.FinishedAt, &ob); err != nil {
 			return err
 		}
 	}
@@ -360,15 +360,19 @@ func (c *Controller) startupTimeout() time.Duration {
 	return 5 * time.Minute
 }
 
-func (c *Controller) captureResult(ctx context.Context, r model.Record, cancelling bool, finishedAt time.Time) error {
+func (c *Controller) captureResult(ctx context.Context, r model.Record, cancelling bool, finishedAt time.Time, ob *backend.Observation) error {
 	if r.Result != nil {
 		return nil
 	}
-	capturer, ok := c.Backend.(backend.ResultCapturer)
-	if !ok {
-		return nil
-	} // Legacy embedded/test backends may not expose results.
-	result, err := capturer.CaptureResult(ctx, r.ID)
+	var result model.ExecutionResult
+	var err error
+	if capturer, ok := c.Backend.(backend.ObservedResultCapturer); ok && ob != nil && ob.Capture != nil {
+		result, err = capturer.CaptureObservedResult(ctx, r.ID, *ob)
+	} else if capturer, ok := c.Backend.(backend.ResultCapturer); ok {
+		result, err = capturer.CaptureResult(ctx, r.ID)
+	} else {
+		return nil // Legacy embedded/test backends may not expose results.
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err
@@ -480,7 +484,7 @@ func (c *Controller) maintain(ctx context.Context) error {
 		go func() {
 			defer wg.Done()
 			for r := range work {
-				err := c.captureResult(opctx, r, false, r.UpdatedAt)
+				err := c.captureResult(opctx, r, false, r.UpdatedAt, nil)
 				if err == nil {
 					err = inventory.Cleanup(opctx, r)
 				}

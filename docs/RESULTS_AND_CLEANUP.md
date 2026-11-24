@@ -4,6 +4,8 @@ The controller captures a bounded result before recording a normal terminal outc
 
 The backend also checks each observed, owned Pod against the approved Job template. It permits documented API defaults, scheduler binding, exact standard tolerations and scheduling/overhead additions authorized by the current RuntimeClass. Images, commands, credentials, volumes, sidecars, security settings and grace cannot be changed by admission. A positively detected mutation requests cleanup as `infra_failure` and its output is refused; ownership-fenced deletion still proceeds. Optional Pod observation failure does not erase an authoritative terminal Job outcome. Custom admission defaults outside these allowances need explicit compatibility work and tests; this check is detection after Pod admission, not a replacement for admission controls or isolation qualification.
 
+Normal terminal capture reuses the Job/validated-Pod evidence from that observation through an opaque, backend/run/Job-UID-bound receipt. It retains independent Pod copies only for that observation; it is not a global Pod cache and is never serialized into the API. The log read still occurs, but a second Job/Pod lookup is avoided. A retry obtains a fresh observation and retains the existing finish-time capture budget. Cancellation and legacy backends keep their fresh capture path. Kubernetes' log subresource has no Pod-UID precondition; reusing observed evidence does not remove that existing endpoint limitation.
+
 `GET /v1/runs/{id}` includes an optional `result` attachment:
 
 ```json

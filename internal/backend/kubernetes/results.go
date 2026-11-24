@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
@@ -24,7 +25,75 @@ const (
 )
 
 var _ backend.ResultCapturer = (*Backend)(nil)
+var _ backend.ObservedResultCapturer = (*Backend)(nil)
 var _ backend.JobInventory = (*Backend)(nil)
+
+// resultReceipt belongs only to the returned observation. The controller keeps
+// it for that observation's capture; no backend cache retains it across passes.
+// It does not authorize any mutation.
+type resultReceipt struct {
+	backend     *Backend
+	runID       string
+	jobUID      types.UID
+	observation backend.Observation
+	pods        []corev1.Pod
+	podErr      error
+}
+
+func (*resultReceipt) String() string { return "opaque execution result receipt" }
+
+func (b *Backend) resultObservation(id string, job *batchv1.Job, pods []corev1.Pod, podErr error, ob backend.Observation) backend.Observation {
+	source := ob
+	source.Capture = nil
+	receipt := &resultReceipt{backend: b, runID: id, jobUID: job.UID, observation: source, podErr: podErr}
+	// A failed validation must not hand unvalidated Pod data to capture.
+	if podErr == nil {
+		receipt.pods = make([]corev1.Pod, len(pods))
+		for i := range pods {
+			pods[i].DeepCopyInto(&receipt.pods[i])
+		}
+	}
+	ob.Capture = receipt
+	return ob
+}
+
+// CaptureObservedResult consumes one terminal observation's immutable evidence.
+// A later retry gets a new receipt from Observe, including fresh Pod lookup
+// errors, while the Job's terminal timestamp keeps the capture wait bounded.
+func (b *Backend) CaptureObservedResult(ctx context.Context, id string, ob backend.Observation) (model.ExecutionResult, error) {
+	result := model.ExecutionResult{Status: "unavailable", CapturedAt: time.Now().UTC()}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	receipt, ok := ob.Capture.(*resultReceipt)
+	if !ok || receipt == nil || receipt.backend != b || receipt.runID != id || receipt.jobUID == "" || !ob.State.Terminal() {
+		return result, errors.New("invalid execution result receipt")
+	}
+	source := receipt.observation
+	if source.State != ob.State || source.Reason != ob.Reason || source.ReasonCode != ob.ReasonCode || !source.FinishedAt.Equal(ob.FinishedAt) {
+		return result, errors.New("execution result receipt differs from its observation")
+	}
+	if receipt.podErr != nil {
+		return result, receipt.podErr
+	}
+	// Check the frozen ownership binding without another Kubernetes request.
+	name, err := jobName(id)
+	if err != nil {
+		return result, err
+	}
+	for _, pod := range receipt.pods {
+		owned := false
+		for _, owner := range pod.OwnerReferences {
+			if owner.APIVersion == "batch/v1" && owner.Kind == "Job" && owner.Name == name && owner.UID == receipt.jobUID && owner.Controller != nil && *owner.Controller {
+				owned = true
+			}
+		}
+		if !owned || pod.Namespace != b.namespace || pod.Labels[ManagedByLabel] != "agent-os" || pod.Labels[RunIDLabel] != id {
+			return result, errors.New("execution result receipt has invalid Pod ownership")
+		}
+	}
+	return b.capturePods(ctx, receipt.pods, result)
+}
 
 // ListExecutions includes every managed-label Job, including malformed/unknown
 // run IDs. The inventory itself neither adopts nor deletes any resource.
@@ -80,6 +149,10 @@ func (b *Backend) CaptureResult(ctx context.Context, id string) (model.Execution
 	if err != nil {
 		return result, err
 	}
+	return b.capturePods(ctx, pods, result)
+}
+
+func (b *Backend) capturePods(ctx context.Context, pods []corev1.Pod, result model.ExecutionResult) (model.ExecutionResult, error) {
 	if len(pods) == 0 {
 		return result, nil
 	}

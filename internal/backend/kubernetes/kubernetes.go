@@ -534,7 +534,7 @@ func (b *Backend) ownedJob(ctx context.Context, id string) (*batchv1.Job, error)
 	return job, nil
 }
 
-func (b *Backend) Observe(ctx context.Context, id string) (backend.Observation, error) {
+func (b *Backend) Observe(ctx context.Context, id string) (ob backend.Observation, observeErr error) {
 	job, err := b.ownedJob(ctx, id)
 	if err != nil {
 		return backend.Observation{}, err
@@ -561,6 +561,11 @@ func (b *Backend) Observe(ctx context.Context, id string) (backend.Observation, 
 		return backend.Observation{}, errors.New("execution has contradictory Job outcome conditions")
 	}
 	pods, podErr := b.executionPods(ctx, id, job)
+	defer func() {
+		if observeErr == nil && ob.State.Terminal() {
+			ob = b.resultObservation(id, job, pods, podErr, ob)
+		}
+	}()
 	if errors.Is(podErr, errPodSpecChanged) {
 		return backend.Observation{State: model.Cancelling, Reason: "execution Pod differs from the approved Job template", ReasonCode: model.ReasonInfraFailure}, nil
 	}

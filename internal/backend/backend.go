@@ -21,12 +21,22 @@ type Observation struct {
 	// FinishedAt is the terminal Job timestamp, when Kubernetes supplies one.
 	// A zero value means the controller must use its durable fallback clock.
 	FinishedAt time.Time
+	// Capture is an optional, opaque receipt for this observation only. It is
+	// runtime-owned evidence, never caller input or a durable/API payload.
+	Capture any `json:"-"`
 }
 
 // ResultCapturer is an optional runtime capability. Output is untrusted data;
 // an unavailable/partial result must never be mistaken for an observed exit.
 type ResultCapturer interface {
 	CaptureResult(context.Context, string) (model.ExecutionResult, error)
+}
+
+// ObservedResultCapturer reuses evidence already validated by Observe. The
+// backend must reject receipts from another backend, execution or observation.
+// Backends without this capability retain the ResultCapturer path.
+type ObservedResultCapturer interface {
+	CaptureObservedResult(context.Context, string, Observation) (model.ExecutionResult, error)
 }
 
 // Execution identifies a managed-label Job for reconciliation. Inventory is
