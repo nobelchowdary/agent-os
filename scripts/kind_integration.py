@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Real kubelet/gVisor lifecycle campaign on the dedicated agentos-ci cluster."""
+"""Opt-in gVisor lifecycle checks; defaults target the disposable agentos-ci cluster."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import importlib.util
+import ipaddress
 import json
+import math
 import os
 from pathlib import Path
+import re
 import secrets
 import socket
 import subprocess
@@ -25,7 +30,9 @@ TERMINAL = {'succeeded', 'failed', 'cancelled'}
 
 
 class CheckFailed(Exception):
-    pass
+    def __init__(self, category, evidence=None):
+        super().__init__(category)
+        self.evidence = evidence
 
 
 def require(condition, category):
@@ -60,9 +67,44 @@ def eventually(operation, predicate=bool, timeout=180, category='condition_timeo
     raise CheckFailed(category)
 
 
+def api_egress_destinations(values, port):
+    require(isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535,
+            'invalid_api_egress_port')
+    destinations = set()
+    for value in values:
+        try:
+            network = ipaddress.ip_network(value, strict=True)
+        except (ValueError, TypeError):
+            raise CheckFailed('invalid_api_egress_host_cidr') from None
+        require(isinstance(value, str) and '/' in value and network.prefixlen == network.max_prefixlen,
+                'invalid_api_egress_host_cidr')
+        destinations.add(str(network))
+    return tuple(sorted(destinations))
+
+
 class Cluster:
-    def __init__(self):
-        self.k = [str(WORK / 'bin' / 'kubectl'), '--kubeconfig', str(WORK / 'kubeconfig'), '--context', CONTEXT]
+    def __init__(self, kubectl=None, kubeconfig=None, context=CONTEXT, worker_nodes=(), api_node=None,
+                 api_image=None, workload_image=None, cluster_profile=None, allow_destructive_external=False,
+                 load_sizes=(), api_egress_cidrs=(), api_egress_port=443):
+        kubeconfig = Path(kubeconfig) if kubeconfig else WORK / 'kubeconfig'
+        self.dedicated_kind = context == CONTEXT and kubeconfig.resolve() == (WORK / 'kubeconfig').resolve()
+        require(self.dedicated_kind or allow_destructive_external, 'external_cluster_requires_destructive_opt_in')
+        require(self.dedicated_kind or (worker_nodes and api_node and api_image and workload_image), 'external_cluster_requires_nodes_and_images')
+        self.context = context
+        self.profile = cluster_profile or ('kind' if self.dedicated_kind else 'external')
+        require(self.dedicated_kind or self.profile != 'kind', 'external_cluster_cannot_claim_dedicated_kind')
+        require(not self.dedicated_kind or self.profile == 'kind', 'dedicated_kind_requires_kind_profile')
+        self.api_egress_cidrs = api_egress_destinations(api_egress_cidrs, api_egress_port)
+        self.api_egress_port = api_egress_port
+        require(self.dedicated_kind or self.api_egress_cidrs, 'external_cluster_requires_api_egress_destinations')
+        self.worker_nodes, self.api_node = set(worker_nodes), api_node
+        self.api_image = api_image or 'agent-os:kind-ci'
+        self.workload_image = workload_image or PYTHON_IMAGE
+        require(re.fullmatch(r'[^\s@]+@sha256:[0-9a-f]{64}', self.workload_image), 'workload_image_requires_sha256_digest')
+        self.load_sizes = tuple(load_sizes)
+        self.configuration = {}
+        self.node_inventory = []
+        self.k = [str(kubectl or WORK / 'bin' / 'kubectl'), '--kubeconfig', str(kubeconfig), '--context', context]
         self.token = secrets.token_urlsafe(48)
         self.forward = None
         self.forward_ready = None
@@ -222,19 +264,65 @@ class Cluster:
             return {'unavailable': True}
 
     def install(self):
-        # Every command uses the private kubeconfig/context; never the user's default.
-        require(self.kubectl('config', 'current-context').strip() == CONTEXT, 'wrong_context')
-        for leaf in ('namespaces.yaml', 'rbac.yaml', 'workload-policy.yaml', 'workload-limits.yaml'):
+        # Selection is explicit on every invocation, independent of current-context.
+        nodes = self.obj('nodes')['items']
+        by_name = {node['metadata']['name']: node for node in nodes}
+        if not self.worker_nodes and self.dedicated_kind:
+            self.worker_nodes = {name for name, node in by_name.items()
+                                 if node['metadata'].get('labels', {}).get('agentos.dev/test-worker') == 'true'}
+        require(self.worker_nodes and self.worker_nodes <= by_name.keys(), 'selected_workers_not_found')
+        if self.api_node is None and self.dedicated_kind:
+            controls = [name for name, node in by_name.items()
+                        if 'node-role.kubernetes.io/control-plane' in node['metadata'].get('labels', {})]
+            require(len(controls) == 1, 'dedicated_api_node_not_unique')
+            self.api_node = controls[0]
+        require(self.api_node in by_name and self.api_node not in self.worker_nodes, 'api_node_must_be_separate')
+        self.node_inventory = [{'name': name, 'role': 'api' if name == self.api_node else 'workload',
+            'allocatable': by_name[name].get('status', {}).get('allocatable', {}),
+            'reported_node_info': by_name[name].get('status', {}).get('nodeInfo', {})}
+            for name in sorted(self.worker_nodes | {self.api_node})]
+        if not self.dedicated_kind:
+            # Do not install/replace an external node runtime or silently widen its placement.
+            runtime = self.obj('runtimeclass', 'gvisor')
+            require(runtime.get('handler') == 'runsc', 'external_runtime_not_runsc')
+            selector = runtime.get('scheduling', {}).get('nodeSelector', {})
+            eligible = {name for name, node in by_name.items() if all(
+                node['metadata'].get('labels', {}).get(key) == value for key, value in selector.items())}
+            require(selector and eligible == self.worker_nodes, 'external_runtime_nodes_must_match_selection')
+            existing = {item['metadata']['name'] for item in self.obj('namespaces')['items']}
+            require(not existing.intersection({'agentos-system', NAMESPACE}), 'external_campaign_requires_fresh_namespaces')
+            # create, rather than apply, also fails closed if another actor
+            # creates either namespace between inspection and this operation.
+            self.kubectl('create', '-f', str(ROOT / 'deploy' / 'namespaces.yaml'))
+        else:
+            self.kubectl('apply', '-f', str(ROOT / 'deploy' / 'namespaces.yaml'))
+        for leaf in ('rbac.yaml', 'workload-policy.yaml', 'workload-limits.yaml'):
             self.kubectl('apply', '-f', str(ROOT / 'deploy' / leaf))
-        self.apply({'apiVersion': 'node.k8s.io/v1', 'kind': 'RuntimeClass', 'metadata': {'name': 'gvisor'}, 'handler': 'runsc',
-                    'scheduling': {'nodeSelector': {'agentos.dev/test-worker': 'true'}}})
+        if not self.dedicated_kind:
+            self.kubectl('apply', '-f', str(ROOT / 'deploy' / 'api-policy.yaml'))
+            self.apply({'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
+                'metadata': {'name': 'agentos-api-kubernetes-egress', 'namespace': 'agentos-system'},
+                'spec': {'podSelector': {'matchLabels': {'app.kubernetes.io/name': 'agent-os',
+                                                        'app.kubernetes.io/component': 'api'}},
+                         'policyTypes': ['Egress'], 'egress': [{
+                             'to': [{'ipBlock': {'cidr': cidr}} for cidr in self.api_egress_cidrs],
+                             'ports': [{'protocol': 'TCP', 'port': self.api_egress_port}]}]}})
+        if self.dedicated_kind:
+            self.apply({'apiVersion': 'node.k8s.io/v1', 'kind': 'RuntimeClass', 'metadata': {'name': 'gvisor'}, 'handler': 'runsc',
+                        'scheduling': {'nodeSelector': {'agentos.dev/test-worker': 'true'}}})
         config = json.loads((ROOT / 'config' / 'gvisor.example.json').read_text())
         config.update(max_active_per_tenant=4, max_active_total=4, startup_timeout_seconds=20,
                       result_retention_seconds=86400, kubernetes_qps=50, kubernetes_burst=100)
         python = config['templates']['python']
+        python['termination_grace_period_seconds'] = 10
+        python['image'] = self.workload_image
         python['resources'] = {'cpu_milli': 100, 'memory_mib': 256, 'disk_mib': 32}
         python['default_timeout_seconds'], python['max_timeout_seconds'] = 120, 300
         config['templates'] = {'python': python, 'bad-image': dict(python, image='registry.invalid/agentos-ci@sha256:' + '0' * 64)}
+        if self.load_sizes:
+            config['templates']['load'] = dict(python, resources={'cpu_milli': 25, 'memory_mib': 64, 'disk_mib': 16})
+        self.administrator_config = config
+        self.configuration = self.configuration_snapshot(config)
         self.apply({'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'agentos-config', 'namespace': 'agentos-system'}, 'data': {'config.json': json.dumps(config)}})
         # API token travels only through stdin to kubectl, never command arguments/logs.
         self.apply({'apiVersion': 'v1', 'kind': 'Secret', 'metadata': {'name': 'agentos-api-tokens', 'namespace': 'agentos-system'}, 'stringData': {'local-token': self.token}})
@@ -243,11 +331,43 @@ class Cluster:
             if item['kind'] == 'Deployment':
                 spec = item['spec']['template']['spec']
                 spec['terminationGracePeriodSeconds'] = 5
-                spec['nodeSelector'] = {'kubernetes.io/hostname': 'agentos-ci-control-plane'}
+                spec['nodeSelector'] = {'kubernetes.io/hostname': by_name[self.api_node]['metadata']['labels']['kubernetes.io/hostname']}
                 spec['tolerations'] = [{'key': 'node-role.kubernetes.io/control-plane', 'operator': 'Exists', 'effect': 'NoSchedule'}]
-                spec['containers'][0]['image'] = 'agent-os:kind-ci'
+                spec['containers'][0]['image'] = self.api_image
         self.apply(objects)
         self.rollout()
+
+    def configuration_snapshot(self, config):
+        snapshot = {'max_active_per_tenant': config['max_active_per_tenant'],
+                              'max_active_total': config['max_active_total'],
+                              'kubernetes_qps': config['kubernetes_qps'], 'kubernetes_burst': config['kubernetes_burst'],
+                              'startup_timeout_seconds': config['startup_timeout_seconds'],
+                              'templates': {name: {'resources': template['resources'],
+                                  'image': template['image'],
+                                  'termination_grace_period_seconds': template['termination_grace_period_seconds'],
+                                  'max_timeout_seconds': template['max_timeout_seconds']}
+                                  for name, template in config['templates'].items()},
+                              'resource_quota': self.obj('resourcequota', 'agentos-workloads')['spec']['hard']}
+        snapshot['api_kubernetes_egress'] = None if self.dedicated_kind else {
+            'host_cidrs': list(self.api_egress_cidrs), 'tcp_port': self.api_egress_port}
+        return json.loads(json.dumps(snapshot))
+
+    def configure_load(self, capacity):
+        require(capacity in self.load_sizes, 'unselected_load_capacity')
+        # Keep the full 200/500 lifecycle baseline at its original 4/20 policy.
+        # Only the subsequent selected load case changes admission/startup limits.
+        self.drain()
+        config = json.loads(json.dumps(self.administrator_config))
+        config.update(max_active_per_tenant=capacity, max_active_total=capacity, startup_timeout_seconds=240)
+        quota = self.obj('resourcequota', 'agentos-workloads')
+        quota['spec']['hard']['pods'] = str(capacity)
+        quota['spec']['hard']['count/jobs.batch'] = str(max(64, capacity))
+        self.apply(quota)
+        self.apply({'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'agentos-config', 'namespace': 'agentos-system'}, 'data': {'config.json': json.dumps(config)}})
+        self.kubectl('-n', 'agentos-system', 'rollout', 'restart', 'deployment/agentos-api')
+        self.rollout()
+        self.administrator_config = config
+        return self.configuration_snapshot(config)
 
 
 class ObjectWatch:
@@ -255,6 +375,7 @@ class ObjectWatch:
     def __init__(self, cluster, kind):
         self.cluster, self.kind = cluster, kind
         self.seen, self.errors, self.lock = {}, [], threading.Lock()
+        self.pod_times, self.running, self.running_history = {}, set(), []
         listing = cluster.obj(kind)
         version = listing['metadata']['resourceVersion']
         # kubectl get has no --resource-version flag. Its raw transport can
@@ -268,6 +389,12 @@ class ObjectWatch:
         self.thread.start()
 
     def read(self):
+        try:
+            self.read_events()
+        except Exception:
+            self.errors.append('invalid_watch_stream')
+
+    def read_events(self):
         decoder, pending = json.JSONDecoder(), ''
         while True:
             block = self.process.stdout.read1(8192)
@@ -288,9 +415,32 @@ class ObjectWatch:
                 value = event['object']
                 metadata = value.get('metadata', {})
                 run_id = metadata.get('labels', {}).get(RUN_LABEL)
-                if run_id and event['type'] == 'ADDED':
+                if run_id:
                     with self.lock:
-                        self.seen.setdefault(run_id, set()).add(metadata['uid'])
+                        if event['type'] == 'ADDED':
+                            self.seen.setdefault(run_id, set()).add(metadata['uid'])
+                        if self.kind == 'pods':
+                            for container in value.get('status', {}).get('containerStatuses', []):
+                                if container['name'] != 'agent':
+                                    continue
+                                state = container.get('state', {})
+                                active = state.get('running', {})
+                                ended = state.get('terminated', {})
+                                times = self.pod_times.setdefault(run_id, {})
+                                if active.get('startedAt') or ended.get('startedAt'):
+                                    times['started_at'] = active.get('startedAt') or ended['startedAt']
+                                if ended.get('finishedAt'):
+                                    times['finished_at'] = ended['finishedAt']
+                                if active and event['type'] != 'DELETED':
+                                    self.running.add(run_id)
+                                else:
+                                    self.running.discard(run_id)
+                                self.running_history.append(frozenset(self.running))
+
+    def load_observations(self, ids):
+        with self.lock:
+            return ({run_id: dict(self.pod_times.get(run_id, {})) for run_id in ids},
+                    max((len(snapshot.intersection(ids)) for snapshot in self.running_history), default=0))
 
     def unique(self, ids):
         require(self.process.poll() is None and not self.errors and self.thread.is_alive(), 'watch_continuity_lost')
@@ -306,6 +456,7 @@ class ObjectWatch:
 def cancel_ignoring_term(cluster):
     run = cluster.submit("import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ignoring-term',flush=True); time.sleep(180)", 'cancel-ignore-term', timeout=240)
     pod = cluster.running_pod(run)
+    require(pod.get('spec', {}).get('terminationGracePeriodSeconds') == 10, 'configured_ten_second_grace_not_applied')
     # Running only proves the container started, not that Python installed its
     # handler. Observe the line emitted after signal.signal before stopping it.
     eventually(lambda: cluster.request('GET', '/v1/runs/' + run['id'] + '/logs', retry=True),
@@ -321,6 +472,7 @@ def cancel_ignoring_term(cluster):
         for value in pods:
             grace = value.get('metadata', {}).get('deletionGracePeriodSeconds')
             if grace is not None:
+                require(0 <= grace <= 10, 'delete_grace_exceeds_template_grace')
                 deletion_grace.add(grace)
         if current['state'] == 'cancelled':
             require(not pods, 'cancelled_before_pod_disappeared')
@@ -332,17 +484,155 @@ def cancel_ignoring_term(cluster):
     raise CheckFailed('cancellation_did_not_finish')
 
 
-def run_campaign(cluster, sequential, crash_submits, only_case='all'):
-    results = []
+def finished_kubelet_unavailable(cluster):
+    """The Job's completed status must survive an unreachable worker log API."""
+    if not cluster.dedicated_kind:
+        return {'status': 'skipped', 'reason': 'kubelet_disruption_requires_dedicated_kind_docker_node'}
+    run = cluster.submit("import time; print('completed-offline',flush=True); time.sleep(45)",
+                         'finished-kubelet-unavailable', timeout=120)
+    pod = cluster.running_pod(run)
+    node = pod['spec']['nodeName']
+    require(node in cluster.worker_nodes and node != cluster.api_node, 'refusing_stop_unselected_kubelet')
+    label = cluster.command(['docker', 'inspect', '--format', '{{ index .Config.Labels "io.x-k8s.kind.cluster" }}', node]).strip()
+    require(label == 'agentos-ci', 'refusing_stop_non_dedicated_kind_kubelet')
+    stopped = False
+    try:
+        cluster.kubectl('-n', 'agentos-system', 'scale', 'deployment/agentos-api', '--replicas=0')
+        cluster.kubectl('-n', 'agentos-system', 'wait', '--for=delete', 'pod', '-l', 'app.kubernetes.io/component=api', '--timeout=60s')
+        cluster.stop_forward()
+        require(not any(c.get('type') == 'Complete' and c.get('status') == 'True' for c in
+                        cluster.obj('job', 'agentos-' + run['id']).get('status', {}).get('conditions', [])),
+                'task_completed_before_api_stopped')
+        eventually(lambda: cluster.obj('job', 'agentos-' + run['id']), lambda job: any(
+            c.get('type') == 'Complete' and c.get('status') == 'True' for c in job.get('status', {}).get('conditions', [])),
+            timeout=120, category='offline_task_never_completed')
+        # Mark the restoration obligation before issuing a potentially ambiguous command.
+        stopped = True
+        cluster.command(['docker', 'exec', node, 'systemctl', 'stop', 'kubelet'])
+        cluster.kubectl('-n', 'agentos-system', 'scale', 'deployment/agentos-api', '--replicas=1')
+        cluster.rollout()
+        done = cluster.finish(run, 'succeeded', 'completed', timeout=120)
+        require(done.get('result', {}).get('status') == 'unavailable', 'unreachable_logs_not_marked_unavailable')
+        require(done['result'].get('output_complete') is False, 'unavailable_output_claimed_complete')
+        require(done['result'].get('exit_code') == 0, 'unavailable_logs_lost_exit_status')
+        require(cluster.request('GET', '/readyz', retry=True).get('status') == 'ready', 'api_not_ready_after_unavailable_logs')
+        return {'status': 'passed', 'terminal_state': done['state'], 'result_status': done['result']['status'],
+                'exit_code': done['result']['exit_code'], 'api_ready': True}
+    finally:
+        try:
+            if stopped:
+                cluster.command(['docker', 'exec', node, 'systemctl', 'start', 'kubelet'])
+                cluster.kubectl('wait', '--for=condition=Ready', 'node', node, '--timeout=180s')
+        finally:
+            cluster.kubectl('-n', 'agentos-system', 'scale', 'deployment/agentos-api', '--replicas=1')
+            cluster.rollout()
+
+
+def timestamp(value):
+    return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+
+
+def distribution(values):
+    require(bool(values) and all(math.isfinite(value) for value in values), 'missing_timing_samples')
+    ordered = sorted(values)
+    return {'count': len(ordered), 'min': round(ordered[0], 6),
+            **{name: round(ordered[max(0, math.ceil(len(ordered) * fraction) - 1)], 6)
+               for name, fraction in [('p50', .5), ('p95', .95), ('p99', .99)]},
+            'max': round(ordered[-1], 6)}
+
+
+def load_measurements(watch, records, target):
+    ids = {record['id'] for record in records}
+    require(len(ids) == target, 'load_receipt_count_mismatch')
+    observations, observed_peak = watch.load_observations(ids)
+    intervals, lags = [], []
+    for record in records:
+        times = observations[record['id']]
+        require('started_at' in times and 'finished_at' in times, 'missing_load_pod_timestamps')
+        started, finished = timestamp(times['started_at']), timestamp(times['finished_at'])
+        require(finished > started, 'invalid_load_pod_interval')
+        terminal = [event for event in record['events'] if event['state'] in TERMINAL]
+        require(len(terminal) == 1, 'nonunique_terminal_history')
+        lags.append(timestamp(terminal[0]['at']) - finished)
+        intervals.extend([(started, 1), (finished, -1)])
+    active = interval_peak = 0
+    for _, delta in sorted(intervals):
+        active += delta
+        interval_peak = max(interval_peak, active)
+    measurements = {'target_concurrency': target, 'peak_observed_running_containers': observed_peak,
+            'peak_container_timestamp_overlap': interval_peak,
+            'pod_exit_to_persisted_terminal_seconds': distribution(lags),
+            'clock_basis': 'node agent-container finishedAt to API terminal event at; clock skew unqualified',
+            'negative_lag_samples': sum(value < 0 for value in lags)}
+    if observed_peak < target or interval_peak < target:
+        raise CheckFailed('target_running_concurrency_not_observed', evidence=measurements)
+    return measurements
+
+
+def load_case(cluster, watch, count):
+    # Hold tasks to a common wall-clock gate so admission count cannot stand in
+    # for measured running concurrency. Insufficient resources fail this case.
+    configuration = cluster.configure_load(count)
+    gate = time.time() + 180
+    code = "import time; time.sleep(max(0, " + repr(gate) + " - time.time())); print('load-complete')"
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        runs = list(pool.map(lambda index: cluster.submit(code, 'load-' + str(count) + '-' + str(index),
+                                                         template='load', timeout=300), range(count)))
+    records = []
+    try:
+        for run in runs:
+            done = cluster.finish(run, 'succeeded', 'completed', timeout=360)
+            require(done.get('result', {}).get('exit_code') == 0, 'load_missing_success_exit_status')
+            records.append(done)
+        eventually(lambda: watch.load_observations({run['id'] for run in runs})[0],
+                   lambda observations: all('finished_at' in item for item in observations.values()),
+                   timeout=15, category='load_watch_missing_exit')
+        watch.unique({run['id'] for run in runs})
+        return {**load_measurements(watch, records, count), 'configuration': configuration}
+    except CheckFailed as failure:
+        if failure.evidence is None:
+            observations, peak = watch.load_observations({run['id'] for run in runs})
+            failure.evidence = {'target_concurrency': count, 'peak_observed_running_containers': peak,
+                                'receipts': len(runs), 'validated_terminal_records': len(records),
+                                'pods_with_exit_timestamp': sum('finished_at' in item for item in observations.values())}
+        failure.evidence['configuration'] = configuration
+        raise
+
+
+def run_boundary_checks(cluster):
+    spec = importlib.util.spec_from_file_location('agentos_boundary_cases', ROOT / 'scripts' / 'boundary_cases.py')
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    try:
+        return helper.boundary_checks(cluster)
+    except helper.BoundaryFailure as failure:
+        raise CheckFailed(str(failure)) from None
+
+
+def run_campaign(cluster, sequential, crash_submits, only_case='all', load_sizes=(), results=None):
+    if results is None:
+        results = []
     watchers = [ObjectWatch(cluster, kind) for kind in ('jobs', 'pods')]
     try:
         def case(name, operation):
             if only_case != 'all' and name not in ('actual_gvisor_canary', only_case):
                 return
             start = time.monotonic()
-            operation()
-            cluster.drain()
-            results.append({'case': name, 'status': 'passed', 'seconds': round(time.monotonic() - start, 3)})
+            try:
+                observation = operation()
+                cluster.drain()
+            except Exception as failure:
+                failed = {'case': name, 'status': 'failed', 'seconds': round(time.monotonic() - start, 3),
+                          'failure': str(failure) if isinstance(failure, CheckFailed) else type(failure).__name__}
+                if isinstance(failure, CheckFailed) and failure.evidence is not None:
+                    failed['observations'] = failure.evidence
+                results.append(failed)
+                raise
+            result = {'case': name, 'status': 'passed', 'seconds': round(time.monotonic() - start, 3)}
+            if isinstance(observation, dict):
+                result['observations'] = observation
+                result['status'] = observation.get('status', 'passed')
+            results.append(result)
             print(json.dumps(results[-1]), flush=True)
 
         def standard(code, key, state, reason, exit_code=None):
@@ -357,6 +647,7 @@ def run_campaign(cluster, sequential, crash_submits, only_case='all'):
             text = done['result'].get('output_head', '') + done['result'].get('output_tail', '')
             require('gvisor' in text.lower(), 'runtime_canary_not_gvisor')
         case('actual_gvisor_canary', canary)
+        case('boundary_checks', lambda: run_boundary_checks(cluster))
 
         def orphan():
             plan = cluster.request('POST', '/v1/plan', {'template': 'python'}, retry=True)
@@ -401,8 +692,7 @@ def run_campaign(cluster, sequential, crash_submits, only_case='all'):
 
         def disk():
             run = cluster.submit("import time; f=open('/workspace/fill','wb'); f.write(b'x'*(48*1024*1024)); f.flush(); print('disk-limit-written',flush=True); time.sleep(180)", 'disk-limit', timeout=240)
-            done = cluster.finish(run, 'failed', timeout=300)
-            require(done.get('reason_code') in ('unknown', 'infra_failure', 'evicted'), 'disk_not_observed_as_eviction')
+            done = cluster.finish(run, 'failed', 'evicted', timeout=300)
             # One local observation cannot establish portable task-limit attribution.
             results.append({'case': 'disk_reason_observed', 'reason_code': done['reason_code'], 'status': 'observed'})
         case('disk_limit', disk)
@@ -411,7 +701,7 @@ def run_campaign(cluster, sequential, crash_submits, only_case='all'):
             run = cluster.submit("import time; print('drain-started',flush=True); time.sleep(180)", 'node-drain', timeout=240)
             pod = cluster.running_pod(run)
             node = pod['spec']['nodeName']
-            require(node in ('agentos-ci-worker', 'agentos-ci-worker2'), 'refusing_drain_nonworker')
+            require(node in cluster.worker_nodes and node != cluster.api_node, 'refusing_drain_unselected_worker')
             try:
                 cluster.kubectl('drain', node, '--ignore-daemonsets', '--delete-emptydir-data', '--timeout=150s')
                 cluster.finish(run, 'failed', 'infra_failure')
@@ -436,6 +726,7 @@ def run_campaign(cluster, sequential, crash_submits, only_case='all'):
                 cluster.rollout()
             cluster.finish(run, 'failed', 'deadline_exceeded')
         case('deadline_with_api_scaled_zero', offline_deadline)
+        case('finished_kubelet_unavailable', lambda: finished_kubelet_unavailable(cluster))
 
         def cancelled():
             results.append({'case': 'cancellation_observation', 'status': 'observed', **cancel_ignoring_term(cluster)})
@@ -503,6 +794,8 @@ def run_campaign(cluster, sequential, crash_submits, only_case='all'):
                 watch.unique([run['id'] for run in runs])
             results.append({'case': 'crash_count', 'api_pod_deletions': len(crashes), 'status': 'observed'})
         case('crash_during_' + str(crash_submits) + '_idempotent_submits', crash_campaign)
+        for size in load_sizes:
+            case('load_' + str(size), lambda size=size: load_case(cluster, watchers[1], size))
         for watch in watchers:
             require(not watch.errors and watch.thread.is_alive(), 'watch_continuity_lost')
         return results
@@ -516,30 +809,67 @@ def main():
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--sequential-runs', type=int, default=200)
     parser.add_argument('--crash-submits', type=int, default=500)
-    parser.add_argument('--only-case', choices=('all', 'cancel_ignores_sigterm_until_gone'), default='all')
+    parser.add_argument('--only-case', choices=('all', 'cancel_ignores_sigterm_until_gone',
+                        'finished_kubelet_unavailable', 'boundary_checks', 'load_16', 'load_64'), default='all')
+    parser.add_argument('--load-cases', action='store_true', help='Add measured 16/64 running-task cases to the full campaign.')
+    parser.add_argument('--context', default=CONTEXT, help='Explicit Kubernetes context; defaults to dedicated kind.')
+    parser.add_argument('--kubeconfig', type=Path, help='Private kubeconfig file; defaults to .local/kind-ci/kubeconfig.')
+    parser.add_argument('--kubectl', type=Path, help='kubectl executable; defaults to the pinned kind-ci binary.')
+    parser.add_argument('--worker-node', action='append', default=[], help='Selected eligible worker; repeat for each node.')
+    parser.add_argument('--api-node', help='Separate node for the API Deployment.')
+    parser.add_argument('--api-image', help='Operator-prepared API image available to the selected cluster.')
+    parser.add_argument('--workload-image', help='Digest-pinned Python workload image, including a private registry mirror.')
+    parser.add_argument('--api-egress-cidr', action='append', default=[],
+                        help='External cluster Kubernetes API destination /32 or /128; repeat and account for CNI service/DNAT handling.')
+    parser.add_argument('--api-egress-port', type=int, default=443,
+                        help='External cluster Kubernetes API destination TCP port (default: 443).')
+    parser.add_argument('--cluster-profile', choices=('kind', 'eks', 'external'))
+    parser.add_argument('--allow-destructive-external-cluster', action='store_true',
+                        help='Allow creating fresh Agent OS namespaces, API disruptions and draining selected external workers.')
     args = parser.parse_args()
     if not args.execute:
         print('NOT_EXECUTED: --execute required; no API, Docker or Kubernetes call was made.')
         return 0
     require(1 <= args.sequential_runs <= 1000 and 1 <= args.crash_submits <= 1000, 'invalid_campaign_counts')
-    cluster = Cluster()
-    report = {'scope': 'real_kind_gvisor_lifecycle', 'network_isolation': 'not_qualified', 'eks': 'not_run',
+    require(not args.load_cases or args.only_case == 'all', 'load_cases_requires_full_selection')
+    load_sizes = (int(args.only_case[5:]),) if args.only_case.startswith('load_') else ((16, 64) if args.load_cases else ())
+    dedicated = args.context == CONTEXT and (args.kubeconfig is None or args.kubeconfig.resolve() == (WORK / 'kubeconfig').resolve())
+    require(dedicated or (args.kubeconfig is not None and args.context != CONTEXT), 'external_cluster_requires_explicit_context_and_kubeconfig')
+    cluster = Cluster(kubectl=args.kubectl, kubeconfig=args.kubeconfig, context=args.context,
+                      worker_nodes=args.worker_node, api_node=args.api_node, api_image=args.api_image,
+                      workload_image=args.workload_image,
+                      cluster_profile=args.cluster_profile, allow_destructive_external=args.allow_destructive_external_cluster,
+                      load_sizes=load_sizes, api_egress_cidrs=args.api_egress_cidr, api_egress_port=args.api_egress_port)
+    profile = args.cluster_profile or ('kind' if dedicated else 'external')
+    report_path = WORK / 'result.json' if dedicated else ROOT / '.local' / 'cluster-ci' / profile / 'result.json'
+    report = {'scope': 'real_' + profile + '_gvisor_lifecycle', 'network_isolation': 'not_qualified',
+              'cluster_profile': profile, 'cluster_qualification': 'not_qualified',
+              'cluster_profile_source': 'dedicated_kind_configuration' if dedicated else 'operator_declared',
+              'eks': 'selected_cluster_only' if profile == 'eks' else 'not_run',
               'selection': args.only_case,
+              'load_concurrency_targets': list(load_sizes), 'cases': [],
               'sequential_runs': args.sequential_runs if args.only_case == 'all' else 0,
               'crash_submits': args.crash_submits if args.only_case == 'all' else 0, 'status': 'failed'}
     try:
         cluster.install()
-        report['cases'] = run_campaign(cluster, args.sequential_runs, args.crash_submits, args.only_case)
-        report['status'] = 'passed'
+        report.update(configuration=cluster.configuration,
+                      selected_worker_nodes=sorted(cluster.worker_nodes), api_node=cluster.api_node,
+                      nodes=cluster.node_inventory)
+        report['cases'] = run_campaign(cluster, args.sequential_runs, args.crash_submits, args.only_case,
+                                       load_sizes=load_sizes, results=report['cases'])
+        report['status'] = 'passed_with_skips' if any(item['status'] == 'skipped' for item in report['cases']) else 'passed'
     except Exception as failure:
         report['failure'] = str(failure) if isinstance(failure, CheckFailed) else type(failure).__name__
         report['diagnostics'] = cluster.diagnostics()
         raise
     finally:
         cluster.stop_forward()
-        WORK.mkdir(exist_ok=True, parents=True)
-        (WORK / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
-        (WORK / 'result.json').chmod(0o600)
+        report_path.parent.mkdir(exist_ok=True, parents=True)
+        report_path.parent.chmod(0o700)
+        descriptor = os.open(report_path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, 'w') as handle:
+            handle.write(json.dumps(report, indent=2) + '\n')
+        report_path.chmod(0o600)
     return 0
 
 

@@ -13,18 +13,23 @@ on:
         options:
           - all
           - cancel_ignores_sigterm_until_gone
+          - finished_kubelet_unavailable
+          - load_16
+          - load_64
+          - boundary_checks
 
 permissions:
   contents: read
 
 concurrency:
-  group: kind-gvisor-${{ github.ref }}
+  # A targeted diagnostic must never cancel the full acceptance campaign.
+  group: kind-gvisor-${{ github.ref }}-${{ github.event.inputs.only_case || 'all' }}
   cancel-in-progress: true
 
 jobs:
   lifecycle:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -41,7 +46,12 @@ jobs:
       - name: Run actual kubelet lifecycle and failure campaign
         env:
           CAMPAIGN_CASE: ${{ github.event.inputs.only_case || 'all' }}
-        run: python3 scripts/kind_integration.py --execute --sequential-runs 200 --crash-submits 500 --only-case "$CAMPAIGN_CASE"
+        run: |
+          args=(--execute --sequential-runs 200 --crash-submits 500 --only-case "$CAMPAIGN_CASE")
+          if test "$CAMPAIGN_CASE" = all; then
+            args+=(--load-cases)
+          fi
+          python3 scripts/kind_integration.py "${args[@]}"
       - name: Upload sanitized campaign summary
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

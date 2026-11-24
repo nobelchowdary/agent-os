@@ -2,7 +2,7 @@
 
 The `kind gVisor lifecycle` workflow creates an ephemeral Linux/amd64 cluster with real kubelets, containerd and **gVisor runsc**. It runs the API Deployment with a PVC, then uses the public API and independent Kubernetes Job/Pod watches. A RuntimeClass alias to runc is forbidden. Missing or broken gVisor fails the job; the first workload must return the gVisor `dmesg` marker.
 
-This adds a local Kubernetes lifecycle acceptance track. It does not qualify EKS, Nitro, CNI network enforcement, host escape resistance, production performance or exactly-once external effects. The default kind network plugin is not accepted as NetworkPolicy enforcement. Do not run sensitive or network-connected agents based on this job.
+This adds a local Kubernetes lifecycle acceptance track. It does not qualify EKS, Nitro, host escape resistance, production performance or exactly-once external effects. The pinned kind network plugin includes a NetworkPolicy controller, but its presence is not enforcement evidence: policy setup can fail open. The boundary case below measures specific denied paths against reachable controls. Unmeasured paths remain unqualified. Do not run sensitive or network-connected agents based on this job.
 
 ## Run
 
@@ -13,7 +13,7 @@ docker build --tag agent-os:kind-ci .
 python3 scripts/kind_cluster.py --execute
 docker pull python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
 .local/kind-ci/bin/kind load docker-image --name agentos-ci agent-os:kind-ci python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
-python3 scripts/kind_integration.py --execute --sequential-runs 200 --crash-submits 500
+python3 scripts/kind_integration.py --execute --sequential-runs 200 --crash-submits 500 --load-cases
 .local/kind-ci/bin/kind delete cluster --name agentos-ci --kubeconfig .local/kind-ci/kubeconfig
 ```
 
@@ -25,26 +25,37 @@ For a manual cancellation-only rerun, select `cancel_ignores_sigterm_until_gone`
 gh workflow run kind.yml --ref main -f only_case=cancel_ignores_sigterm_until_gone
 ```
 
-Locally, add `--only-case cancel_ignores_sigterm_until_gone` to the integration command after creating the cluster. This still verifies real gVisor before running the selected case. The summary records the selected scope and zero sequential/idempotent campaign counts. It does not satisfy full acceptance. Push and pull-request events, and manual runs with the default `all`, retain the full 200/500 campaign. Existing concurrency is per ref, so a manual targeted run replaces an in-progress campaign on the same ref.
+Locally, add `--only-case cancel_ignores_sigterm_until_gone` to the integration command after creating the cluster. Other selections are `finished_kubelet_unavailable`, `boundary_checks`, `load_16` and `load_64`. Each still verifies real gVisor before its selected case. The summary records the selected scope and zero sequential/idempotent campaign counts. It does not satisfy full acceptance. Push and pull-request events, and manual runs with the default `all`, retain the full 200/500 campaign plus 16/64 load cases. Concurrency groups include the selected scope, so a targeted diagnostic cannot cancel the full campaign on the same ref.
 
 ## Acceptance cases
 
 - Actual gVisor runtime canary, exit 0, and exit 3; the failing task has one observed Job UID and one Pod UID. Exit code and output remain available after Job deletion and API restart.
 - Unknown suspended Job appears in operator status and remains unadopted/unexecuted.
-- Memory exhaustion, image-pull startup expiry, disk-limit eviction and a worker drain. The disk outcome remains evidence from this cluster; a single test does not justify portable `evicted` attribution. Unknown/infrastructure classification is permitted where structured evidence cannot distinguish the cause.
+- Memory exhaustion, image-pull startup expiry, disk-limit eviction and a worker drain. The disk case must produce `evicted` using the pinned kubelet's structured condition/container-state behavior; an incompatible kubelet fails this case. EKS behavior still needs its own canary.
 - Job deadline becomes authoritative while the API has zero Pods. The timeout still means the Job's activation-to-deadline clock; no process-CPU-time guarantee is introduced.
-- SIGTERM-ignoring cancellation reaches `cancelled` only after the workload Pod disappears. Default workload termination grace remains in effect.
+- A task completes while the API is scaled to zero, then its dedicated kind worker's kubelet is stopped. Restarted API reconciliation must retain exit 0, commit `succeeded` with unavailable output and remain ready. The kubelet is restarted in a finally block. External clusters explicitly skip this Docker-specific fault.
+- SIGTERM-ignoring cancellation reaches `cancelled` only after the workload Pod disappears. The handler must be ready before cancellation, and the watched Pod deletion must carry the template's 10-second grace.
 - Deletion during execution produces infrastructure failure without recreation.
 - 200 sequential successful tasks finish and leave zero Jobs and Pods, detecting the default 64-Job quota leak.
 - 500 unique idempotency keys, each submitted twice with identical input while the API Pod is repeatedly deleted. A full receipt/history check and continuous Job/Pod UID watches require one admission, one terminal history event and one observed execution per key in this campaign. Watch loss, errors or missing events fail rather than silently claiming no duplicates. The test does not make a universal exactly-once guarantee about Kubernetes or external writes.
+- With `--load-cases`, separate cases require 16 and 64 simultaneously running agent containers, not merely admitted records. They record actual watch peaks, start/finish timestamp overlap and Pod-exit-to-persisted-terminal p50/p95/p99/min/max. Raw signed lag retains clock-skew effects; node/API clock synchronization is not qualified. The report includes quotas, resources and client limits. These observations inform whether polling needs replacement; they are not cost or competitor benchmarks.
+- Boundary probes compare restricted tasks with independent before/after positive controls for a peer Pod, Kubernetes API TCP and CoreDNS UDP. A controlled off-cluster IPv4 listener can be supplied through `AGENTOS_BOUNDARY_EXTERNAL_ENDPOINT=IP:PORT`; no public endpoint is assumed. Metadata TCP at `169.254.169.254:80` and external egress remain unqualified when their controls are unavailable. DNS/IPv6/redirect/protocol bypass coverage is incomplete. Admitted Pod checks, non-root identity, absent service-account token, read-only root and a bounded 64-child process exercise supplement those network probes. This is not an unbounded fork bomb or proof of a guest PID ceiling/host escape resistance.
 
 Shorter counts are available for explicit smoke runs and are recorded in the summary; they do not pass the 200/500 acceptance target. Results are under ignored `.local/kind-ci/result.json` and uploaded as a short-lived CI artifact. On failure it includes Pod phase and container-state categories, excluding command output, environment values, annotations and Secret contents. Bootstrap writes a failure category too; the workflow only deletes a cluster after bootstrap recorded that its dedicated name was initially absent. A checked-in workflow is not evidence of a passed campaign; use the actual run conclusion and artifact.
 
-The full baseline at commit `ebeb66f` passed in [workflow run 45289823857](https://github.com/nobelchowdary/agent-os/actions/runs/45289823857): 200 sequential runs and 500 idempotency keys, including 62 API Pod deletions. That remains the full-campaign evidence for the same unchanged runtime. A manual cancellation-only rerun supplements it with evidence for the tightened cancellation test; it does not establish a new full baseline or qualify runtime changes.
+The historical full baseline at commit `ebeb66f` passed in [workflow run 45289823857](https://github.com/nobelchowdary/agent-os/actions/runs/45289823857): 200 sequential runs and 500 idempotency keys, including 62 API Pod deletions. The cancellation-only run at `46184dc` supplements that baseline. Neither qualifies subsequent runtime changes; a new full campaign must pass before claiming the current runtime passed these acceptance cases.
+
+## Prepared external clusters
+
+The same lifecycle harness accepts explicit context, kubeconfig, kubectl and node selections. External execution requires `--allow-destructive-external-cluster`, a separate API node and operator-prepared API/workload images. It refuses existing `agentos-system` or `agentos-workloads` namespaces before mutation. It creates test configuration/policies, scales/deletes the API Pod and drains selected workers; use a disposable cluster. It does not install an external runtime or CNI, provision AWS, or provide blanket EKS qualification. Follow the [EKS brief](EKS_EVALUATION_BRIEF.md) first and inspect `--help` for all selections. The Docker kubelet-stop fault remains unsupported externally.
+
+Supply `--api-egress-cidr` for each required Kubernetes API host destination (`/32` IPv4 or `/128` IPv6), and `--api-egress-port` when it differs from 443. Account for the CNI's Service/DNAT behavior; destinations are operator supplied, not automatically discovered. The harness applies the API deny/DNS policy and this narrow API egress allowance before starting the external API Deployment. Positive-control fixtures have their own explicit allow policy in a separate namespace, so strict startup enforcement does not invalidate the controls. The restricted workload namespace retains deny-all.
 
 ## Reproducible dependencies
 
 The bootstrap pins kind **v0.33.0**, Kubernetes node **v1.37.0** by image digest, kubectl **v1.37.0** by SHA-256, and gVisor **release-20261116.0** by SHA-512. The verified gVisor bundle includes runsc, its containerd shim and sidecar binaries, kept together. The handler uses the actual shim with systrap and the systemd cgroup driver. Do not remove checksum checks or substitute an ordinary runtime to get a green result.
+
+Bootstrap sets `podPidsLimit: 128` and reads back the effective kubelet configuration on every node before the campaign. This bounds host cgroup PIDs/threads; gVisor guest processes need not map one-to-one to host PIDs. The [pinned kind network implementation](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/images/kindnetd/cmd/kindnetd/main.go) explains why dynamic denial probes are required even when the policy controller starts successfully.
 
 kind's node image uses a [version 2 containerd configuration](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/images/base/files/etc/containerd/config.toml), including systemd settings for its existing runtimes. The runsc patch uses the same `io.containerd.grpc.v1.cri` namespace. Mixing in a version 3 runtime table prevents containerd from migrating the existing runtime map, causing kubelet to select cgroupfs while runsc expects systemd paths.
 

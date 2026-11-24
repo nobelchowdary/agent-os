@@ -17,6 +17,7 @@ NAME = 'agentos-ci'
 KIND_VERSION = 'v0.33.0'
 NODE_IMAGE = 'kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5'
 GVISOR_VERSION = 'release-20261116.0'
+POD_PIDS_LIMIT = 128
 PINS = {
     'kind': ('https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64', 'sha256', 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d'),
     'kubectl': ('https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl', 'sha256', '6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f'),
@@ -57,6 +58,11 @@ def cluster_config():
 '''
     return {'kind': 'Cluster', 'apiVersion': 'kind.x-k8s.io/v1alpha4',
             'containerdConfigPatches': [patch],
+            # kubeadm distributes the first node's KubeletConfiguration to all
+            # nodes. Read back the running kubelets below before any abuse test.
+            'kubeadmConfigPatches': ['apiVersion: kubelet.config.k8s.io/v1beta1\n'
+                                    'kind: KubeletConfiguration\n'
+                                    f'podPidsLimit: {POD_PIDS_LIMIT}\n'],
             'nodes': [{'role': 'control-plane', 'image': NODE_IMAGE},
                       {'role': 'worker', 'image': NODE_IMAGE},
                       {'role': 'worker', 'image': NODE_IMAGE}]}
@@ -64,6 +70,18 @@ def cluster_config():
 
 def runsc_config():
     return '[runsc_config]\n  platform = "systrap"\n  systemd-cgroup = "true"\n'
+
+
+def verify_pid_configuration(kubectl, nodes):
+    """Read effective configuration; this alone does not qualify enforcement."""
+    if not nodes:
+        raise RuntimeError('no_disposable_nodes')
+    for node in nodes:
+        value = json.loads(command(kubectl + ['get', '--raw', '/api/v1/nodes/' + node + '/proxy/configz']))
+        limit = value.get('kubeletconfig', {}).get('podPidsLimit')
+        if type(limit) is not int or limit != POD_PIDS_LIMIT:
+            raise RuntimeError('pod_pids_limit_not_configured')
+    return len(nodes)
 
 
 def main():
@@ -100,7 +118,8 @@ def main():
         archive.extractall(runtime, filter='data')
     shim_config = WORK / 'runsc.toml'
     shim_config.write_text(runsc_config())
-    for node in command([kind, 'get', 'nodes', '--name', NAME]).splitlines():
+    nodes = command([kind, 'get', 'nodes', '--name', NAME]).splitlines()
+    for node in nodes:
         for leaf in ('runsc', 'containerd-shim-runsc-v1', 'gvisor-bin'):
             command(['docker', 'cp', str(runtime / leaf), node + ':/usr/local/bin/' + leaf])
         command(['docker', 'cp', str(shim_config), node + ':/etc/containerd/runsc.toml'])
@@ -110,9 +129,16 @@ def main():
         command(['docker', 'exec', node, 'systemctl', 'restart', 'containerd'])
     kubectl = [str(bindir / 'kubectl'), '--kubeconfig', str(WORK / 'kubeconfig'), '--context', 'kind-' + NAME]
     command(kubectl + ['wait', '--for=condition=Ready', 'node', '--all', '--timeout=180s'])
+    verified_nodes = verify_pid_configuration(kubectl, nodes)
+    # kind v0.33 includes kube-network-policies in kindnet. Readiness is only a
+    # prerequisite; the boundary campaign must prove each tested denial with a
+    # reachable positive control before reporting measured enforcement.
+    command(kubectl + ['-n', 'kube-system', 'rollout', 'status', 'daemonset/kindnet', '--timeout=180s'])
     command(kubectl + ['label', 'node', NAME + '-worker', NAME + '-worker2', 'agentos.dev/test-worker=true'])
     print(json.dumps({'cluster': NAME, 'node_image': NODE_IMAGE, 'gvisor': GVISOR_VERSION,
                       'runtime': 'actual_runsc_systrap', 'kubeconfig': '.local/kind-ci/kubeconfig',
+                      'pod_pids_limit_configured': POD_PIDS_LIMIT, 'pid_config_readback_nodes': verified_nodes,
+                      'network_policy_implementation': 'kindnet_kube_network_policies',
                       'network_policy_enforcement': 'not_qualified'}))
     return 0
 
