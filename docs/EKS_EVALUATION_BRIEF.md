@@ -1,6 +1,6 @@
 # First EKS evaluation
 
-Date: November 19, 2026. Status: executable helpers and runtime profiles exist; the founder can set up EKS. No cluster has been connected, qualified or benchmarked yet. Use the [evaluation runbook](EVALUATION_RUNBOOK.md) for commands and evidence contracts.
+Date: November 19, 2026; comparison sequence updated November 23. Status: executable helpers and runtime profiles exist; the founder can set up EKS. No EKS cluster has been connected, qualified or benchmarked yet. Use the [evaluation runbook](EVALUATION_RUNBOOK.md) for commands and evidence contracts.
 
 November 21 update: a [Python harness client](../sdk/python/README.md), resumable lifecycle events and controller health are implemented. Use the [tool-launch example](../examples/agent-harness/README.md) during Phase 1 after the runtime/CNI prerequisites are satisfied. Local client/server interoperability tests use a nonexecuting backend fixture; they do not add a live EKS result.
 
@@ -67,6 +67,8 @@ Do not call the collector's end-to-end differences isolated control-plane overhe
 This compares current execution paths; it does not test the alpha for a hibernation feature it lacks.
 
 A fixed node pool measures resource use and capacity headroom; the EC2 bill does not decrease while the same nodes remain provisioned. A later cost experiment must actually remove or avoid nodes while meeting the workload SLO and counting snapshot, warm-capacity and scaling overhead.
+
+The [next comparison campaign](EVALUATION_PLAN.md#next-comparison-campaign) sequences this deterministic baseline, matched failure/operating exercises, real coding/research tasks and fleet economics. Its later stages require additional harness and usage instrumentation. Keep real-agent correctness and token measurements separate from the current deterministic collector's decision report.
 
 ## Phase 3: assess state preservation and integration
 

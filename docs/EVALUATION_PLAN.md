@@ -1,6 +1,6 @@
 # Agent OS: evaluation plan
 
-Status: proposed performance experiments, updated November 19, 2026. Execution, comparison and compatibility-smoke tooling exists; live-cluster results do not. All numerical gates below are starting hypotheses to revise with design partners before registration/testing. The executable workflow is in [EVALUATION_RUNBOOK.md](EVALUATION_RUNBOOK.md).
+Status: proposed performance experiments, updated November 23, 2026. Execution, comparison and compatibility-smoke tooling exists. The [real kind/gVisor lifecycle campaign](KIND_TESTS.md) has passed; comparative performance, EKS qualification and cost savings remain unmeasured. All numerical gates below are starting hypotheses to revise with design partners before registration/testing. The executable workflow is in [EVALUATION_RUNBOOK.md](EVALUATION_RUNBOOK.md).
 
 November 19 update: EKS is the first available pilot environment. Follow the [EKS evaluation brief](EKS_EVALUATION_BRIEF.md) and [current capability map](ALPHA_CAPABILITY_MAP.md). First qualify and measure existing execution; compare upstream implementations before building idle-memory recovery or another policy gateway.
 
@@ -39,6 +39,25 @@ Start on EKS with one qualified configuration. Add GKE later to compare provider
 5. **Adverse mix:** CPU-heavy compilation, syscall/file-heavy work, large artifacts and one tenant submitting a burst while another has a small steady workload.
 
 Use a deterministic mock model to isolate infrastructure effects. Run separate real-model evaluations with pinned configurations, repeated trials and output checks. Report provider latency/rate limiting separately from execution overhead. Mark non-deterministic quality differences instead of hiding them in averages.
+
+### Next comparison campaign
+
+Start with **Agent OS versus upstream Agent Sandbox on the AWS reference deployment**, using the same qualified gVisor configuration. Add plain gVisor Jobs as a diagnostic floor. This compares our execution and operating contracts while keeping the underlying sandbox comparable. Evaluate Substrate, OpenShell and Nitro in later, separately qualified arms where their execution and policy contracts fit; the existing collectors do not automate those comparisons.
+
+| Step | Work to compare | Evidence to collect |
+| --- | --- | --- |
+| 1. Execution baseline | The existing deterministic cold-claim fixture, with cold-image and cached-image trials registered separately | Correct completion rate, admission-to-readiness and completion latency, throughput, resource observations and all failed trials |
+| 2. Failure and operations | Equivalent task outcomes under API restart, worker loss, deadline and cancellation; installation, upgrade and cleanup from comparable starting states | Lost or duplicated work, recovery/stop time, retained results, leaked resources, operator time and steps |
+| 3. Real agent work | One coding task set with test-based grading, then one research task set with a frozen evidence/citation rubric | Task quality, total time and cost per correct task, model usage and retry waste; extend the harness before collecting these results |
+| 4. Fleet economics | The measured task mix at declared concurrency and active/idle ratios, followed by a capacity-reduction experiment | Correct tasks per node-hour, tail latency, fairness, idle cost and actual fully accounted billing |
+
+Steps 1 and 2 begin only after EKS runtime and network-policy qualification. Reuse the [registration, resource sampler and operator journal](EVALUATION_RUNBOOK.md); the kind lifecycle suite supplies functional cases, not a competitor performance result. The current collector automates only the deterministic cold execution comparison. Fault adapters for other products, resident warm-pool dispatch, real-agent grading and provider-usage collection still need implementation. Record unsupported cases explicitly.
+
+For real-agent trials, keep the agent harness/version, prompts, tools, repository/data snapshot, model/version, sampling settings and context strategy fixed across arms. Use repeated paired tasks and counterbalance arm order to limit cache, provider-load and learning effects. Record provider request IDs privately to reconcile retries and usage without exposing credentials or sensitive prompts.
+
+Report input, output and cached-token usage separately, including failed and repeated attempts in the numerator for **tokens per correctly completed task**. Report the fraction spent on work discarded after infrastructure failures, with an explicit attribution rule. A runtime might reduce that waste; fewer reasoning tokens or better answers require separate evidence. The existing decision tool does not ingest token or task-rubric scores: retain them in a versioned supplemental report until a new protocol supports them.
+
+Choose the primary benefit and thresholds before each new registration. Keep existing registrations and example thresholds unchanged; the exploratory targets below and the executable example protocol are proposals, not interchangeable acceptance rules. Publish regressions and ties alongside wins, with sample counts and uncertainty.
 
 ## 4. Initial engineering gates
 
