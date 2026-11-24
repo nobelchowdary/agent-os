@@ -1,0 +1,1483 @@
+{
+  "recorded_date": "2026-11-24",
+  "scope": "full_kind_gvisor_regression_and_diagnostic_denominator_audit",
+  "source": {
+    "run_id": 45474381467,
+    "run_attempt": 1,
+    "head_sha": "6389b173db6afeae10b3022e6df8bbfa99f39e69",
+    "run_conclusion": "success",
+    "run_started_at": "2026-11-24T19:50:05Z",
+    "artifact_id": 14962466369,
+    "artifact_created_at": "2026-11-24T20:38:40Z",
+    "artifact_result_sha256": "01d1b5745299225281eb527e50e30cc41c88f09e2b71ce0d74ae7e1f6a25ac7c"
+  },
+  "run_url": "https://github.com/nobelchowdary/agent-os/actions/runs/45474381467",
+  "campaign_status": "passed",
+  "selection": "all",
+  "sequential_runs": 200,
+  "crash_submits": 500,
+  "qualification": {
+    "network_isolation": "not_qualified",
+    "cluster_qualification": "not_qualified",
+    "eks": "not_run"
+  },
+  "case_status_counts": {
+    "passed": 18,
+    "observed": 3
+  },
+  "configuration": {
+    "max_active_per_tenant": 4,
+    "max_active_total": 4,
+    "kubernetes_qps": 50,
+    "kubernetes_burst": 100,
+    "startup_timeout_seconds": 20,
+    "templates": {
+      "python": {
+        "resources": {
+          "cpu_milli": 100,
+          "memory_mib": 256,
+          "disk_mib": 32
+        },
+        "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+        "termination_grace_period_seconds": 10,
+        "deadline_scope": "pod",
+        "max_timeout_seconds": 300
+      },
+      "bad-image": {
+        "resources": {
+          "cpu_milli": 100,
+          "memory_mib": 256,
+          "disk_mib": 32
+        },
+        "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "termination_grace_period_seconds": 10,
+        "deadline_scope": "pod",
+        "max_timeout_seconds": 300
+      },
+      "load": {
+        "resources": {
+          "cpu_milli": 25,
+          "memory_mib": 64,
+          "disk_mib": 16
+        },
+        "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+        "termination_grace_period_seconds": 10,
+        "deadline_scope": "pod",
+        "max_timeout_seconds": 300
+      }
+    },
+    "resource_quota": {
+      "count/jobs.batch": "64",
+      "limits.cpu": "8",
+      "limits.memory": "8Gi",
+      "pods": "16",
+      "requests.cpu": "8",
+      "requests.memory": "8Gi"
+    },
+    "api_kubernetes_egress": null
+  },
+  "cases": [
+    {
+      "case": "actual_gvisor_canary",
+      "status": "passed",
+      "seconds": 15.649
+    },
+    {
+      "case": "boundary_checks",
+      "status": "passed",
+      "seconds": 109.923,
+      "observations": {
+        "qualification": "partial",
+        "network": {
+          "controlled_peer": {
+            "qualification": "measured_denial",
+            "control_reachable_before": true,
+            "control_reachable_after": true,
+            "workload_reachable": false
+          },
+          "kubernetes_api": {
+            "qualification": "measured_denial",
+            "control_reachable_before": true,
+            "control_reachable_after": true,
+            "workload_reachable": false
+          },
+          "dns": {
+            "qualification": "measured_denial",
+            "control_reachable_before": true,
+            "control_reachable_after": true,
+            "workload_reachable": false
+          },
+          "metadata": {
+            "qualification": "measured_denial",
+            "control_reachable_before": true,
+            "control_reachable_after": true,
+            "workload_reachable": false
+          },
+          "external_control": {
+            "qualification": "not_qualified",
+            "reason": "operator_control_not_supplied"
+          }
+        },
+        "control_node_count": 2,
+        "admitted_pod_checks": {
+          "required_runtime": true,
+          "host_namespaces_disabled": true,
+          "host_and_token_volumes_absent": true,
+          "nonroot_no_capabilities_readonly_root": true
+        },
+        "process_and_filesystem": {
+          "uid_nonzero": true,
+          "service_account_token_absent": true,
+          "root_write_denied": true,
+          "root_mount_read_only": true,
+          "pid_one_is_python": true
+        },
+        "host_escape_resistance": "not_qualified",
+        "guest_pid_ceiling": "not_qualified",
+        "limits": [
+          "No controlled host marker or escape exploit is exercised.",
+          "A bounded fork loop and node PID configuration do not establish a guest PID ceiling.",
+          "Network results apply only to the named paths and observed control windows."
+        ],
+        "bounded_process_exercise": {
+          "qualification": "host_limit_observed",
+          "node_pid_configuration_readback": true,
+          "fixture": {
+            "state": "failed",
+            "reason_code": "task_error",
+            "exit_code": 128,
+            "last_progress_spawned": 40,
+            "last_progress_stage": "fork_progress",
+            "error_markers": {
+              "resource_temporarily_unavailable": false,
+              "cannot_allocate_memory": false,
+              "traceback": false,
+              "timeout": false,
+              "memory_error": false,
+              "failed_to_create_os_thread": false,
+              "runtime_fatal": false
+            }
+          },
+          "host_pid_observation": {
+            "qualification": "host_pid_limit_hit",
+            "observer_started": true,
+            "errors": [],
+            "pod_qos_class": "Guaranteed",
+            "pod_uid_present": true,
+            "counter_scope": "pod_subtree",
+            "pod_uid_verified": true,
+            "same_pod_uid": true,
+            "same_selected_worker": true,
+            "same_qos_class": true,
+            "readings_complete": true,
+            "cgroup_gone": true,
+            "pids_max": 128,
+            "pids_current_peak": 128,
+            "pids_peak": 128,
+            "pids_events_max_before": 0,
+            "pids_events_max_after": 1,
+            "pids_events_max_increase": 1,
+            "sample_count": 121
+          },
+          "outcome": "failed_execution_with_host_pid_limit_event",
+          "selected_nodes_ready": true,
+          "process_and_followup_cleaned_up": true,
+          "api_ready": true,
+          "followup_actual_gvisor_succeeded": true
+        }
+      }
+    },
+    {
+      "case": "unknown_suspended_job_reported_not_adopted",
+      "status": "passed",
+      "seconds": 2.389
+    },
+    {
+      "case": "exit_zero",
+      "status": "passed",
+      "seconds": 5.699
+    },
+    {
+      "case": "exit_three_retained_once_after_restart",
+      "status": "passed",
+      "seconds": 12.589
+    },
+    {
+      "case": "bounded_head_and_tail",
+      "status": "passed",
+      "seconds": 5.449
+    },
+    {
+      "case": "memory_limit",
+      "status": "passed",
+      "seconds": 111.981
+    },
+    {
+      "case": "image_pull_start_bound",
+      "status": "passed",
+      "seconds": 21.922,
+      "observations": {
+        "state": "failed",
+        "reason_code": "image_pull_failed",
+        "deadline_scope": "pod"
+      }
+    },
+    {
+      "case": "disk_reason_observed",
+      "reason_code": "evicted",
+      "status": "observed"
+    },
+    {
+      "case": "disk_limit",
+      "status": "passed",
+      "seconds": 43.973
+    },
+    {
+      "case": "node_drain",
+      "status": "passed",
+      "seconds": 5.217
+    },
+    {
+      "case": "deadline_with_api_scaled_zero",
+      "status": "passed",
+      "seconds": 67.938,
+      "observations": {
+        "deadline_scope": "pod",
+        "deadline_boundary": "pod_start_time",
+        "api_replicas_during_deadline": 0,
+        "terminal_job_observed": true
+      }
+    },
+    {
+      "case": "finished_kubelet_unavailable",
+      "status": "passed",
+      "seconds": 65.709,
+      "observations": {
+        "status": "passed",
+        "terminal_state": "succeeded",
+        "result_status": "unavailable",
+        "exit_code": 0,
+        "api_ready": true
+      }
+    },
+    {
+      "case": "cancellation_observation",
+      "status": "observed",
+      "handler_ready": true,
+      "configured_grace_seconds": 10,
+      "observed_delete_grace_seconds": [
+        10
+      ],
+      "stop_seconds": 11.504
+    },
+    {
+      "case": "cancel_ignores_sigterm_until_gone",
+      "status": "passed",
+      "seconds": 17.512
+    },
+    {
+      "case": "deleted_job_no_replay",
+      "status": "passed",
+      "seconds": 3.993
+    },
+    {
+      "case": "sequential_200_cleanup",
+      "status": "passed",
+      "seconds": 1121.004
+    },
+    {
+      "case": "crash_count",
+      "api_pod_deletions": 74,
+      "status": "observed"
+    },
+    {
+      "case": "crash_during_500_idempotent_submits",
+      "status": "passed",
+      "seconds": 760.799
+    },
+    {
+      "case": "load_16",
+      "status": "passed",
+      "seconds": 192.671,
+      "observations": {
+        "target_concurrency": 16,
+        "peak_observed_running_containers": 16,
+        "peak_container_timestamp_overlap": 16,
+        "pod_exit_to_persisted_terminal_seconds": {
+          "count": 16,
+          "min": 2.649552,
+          "p50": 3.504567,
+          "p95": 4.499127,
+          "p99": 4.499127,
+          "max": 4.499127
+        },
+        "result_capture": {
+          "captured": 16,
+          "unavailable": 0,
+          "expired": 0,
+          "missing": 0,
+          "unknown": 0,
+          "output_complete": 16,
+          "output_incomplete": 0,
+          "output_completeness_missing": 0
+        },
+        "clock_basis": "node agent-container finishedAt to API terminal event at; clock skew unqualified",
+        "negative_lag_samples": 0,
+        "configuration": {
+          "max_active_per_tenant": 16,
+          "max_active_total": 16,
+          "kubernetes_qps": 50,
+          "kubernetes_burst": 100,
+          "startup_timeout_seconds": 240,
+          "templates": {
+            "python": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "deadline_scope": "pod",
+              "max_timeout_seconds": 300
+            },
+            "bad-image": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "termination_grace_period_seconds": 10,
+              "deadline_scope": "pod",
+              "max_timeout_seconds": 300
+            },
+            "load": {
+              "resources": {
+                "cpu_milli": 25,
+                "memory_mib": 64,
+                "disk_mib": 16
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "deadline_scope": "pod",
+              "max_timeout_seconds": 300
+            }
+          },
+          "resource_quota": {
+            "count/jobs.batch": "64",
+            "limits.cpu": "8",
+            "limits.memory": "8Gi",
+            "pods": "16",
+            "requests.cpu": "8",
+            "requests.memory": "8Gi"
+          },
+          "api_kubernetes_egress": null
+        },
+        "timing_breakdown": {
+          "boundaries": {
+            "container_started_at": "kubelet agent-container startedAt; node clock",
+            "container_finished_at": "kubelet agent-container finishedAt; node clock",
+            "pod_terminal_observed_at": "first harness receipt of terminal Pod phase; not API-server commit time",
+            "job_completion_at": "Job.status.completionTime; Job-controller clock and semantics",
+            "job_terminal_condition_at": "terminal Job condition lastTransitionTime; Job-controller clock",
+            "job_terminal_observed_at": "first harness receipt of terminal Job condition; not API-server commit time",
+            "job_success_criteria_condition_at": "SuccessCriteriaMet=True lastTransitionTime; Job-controller clock",
+            "job_success_criteria_observed_at": "first harness receipt of SuccessCriteriaMet=True; not API-server commit time",
+            "api_terminal_persisted_at": "Agent OS persisted terminal event at; API process clock",
+            "api_terminal_observed_at": "harness load poll returned terminal response; includes sequential polling/order delay"
+          },
+          "clock_skew": "unqualified",
+          "watch_delivery_lag": "unqualified",
+          "attribution": "observation boundaries, not isolated component service times",
+          "identity_counts": {
+            "matched": 16,
+            "unverified": 0,
+            "conflicting": 0
+          },
+          "timestamp_availability": {
+            "container_started_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "container_finished_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "pod_terminal_observed_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_completion_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_terminal_condition_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_terminal_observed_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_success_criteria_condition_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_success_criteria_observed_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "api_terminal_persisted_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "api_terminal_observed_at": {
+              "valid": 16,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            }
+          },
+          "complete_three_stage_samples": 16,
+          "intervals_seconds": {
+            "container_exit_to_observed_pod_terminal": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 1.558402,
+                "p50": 2.558529,
+                "p95": 2.962648,
+                "p99": 2.962648,
+                "max": 2.962648
+              }
+            },
+            "observed_pod_terminal_to_job_completion": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 0.037352,
+                "p50": 0.170238,
+                "p95": 0.482789,
+                "p99": 0.482789,
+                "max": 0.482789
+              }
+            },
+            "job_completion_to_persisted_terminal": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 0.497615,
+                "p50": 0.720861,
+                "p95": 1.499127,
+                "p99": 1.499127,
+                "max": 1.499127
+              }
+            },
+            "container_exit_to_job_completion": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 2.0,
+                "p50": 3.0,
+                "p95": 3.0,
+                "p99": 3.0,
+                "max": 3.0
+              }
+            },
+            "observed_pod_terminal_to_observed_job_terminal": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 0.454401,
+                "p50": 0.874868,
+                "p95": 1.353524,
+                "p99": 1.353524,
+                "max": 1.353524
+              }
+            },
+            "observed_job_terminal_to_observed_api_terminal": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 0.468933,
+                "p50": 1.385945,
+                "p95": 2.375151,
+                "p99": 2.375151,
+                "max": 2.375151
+              }
+            },
+            "job_completion_to_observed_job_terminal": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 0.326608,
+                "p50": 0.70463,
+                "p95": 1.303583,
+                "p99": 1.303583,
+                "max": 1.303583
+              }
+            },
+            "observed_pod_terminal_to_observed_success_criteria": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 0.440975,
+                "p50": 0.790209,
+                "p95": 0.996977,
+                "p99": 0.996977,
+                "max": 0.996977
+              }
+            },
+            "observed_success_criteria_to_observed_job_terminal": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 0.013426,
+                "p50": 0.078498,
+                "p95": 0.399252,
+                "p99": 0.399252,
+                "max": 0.399252
+              }
+            },
+            "success_criteria_condition_to_job_completion": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0,
+                "max": 0.0
+              }
+            },
+            "success_criteria_condition_to_persisted_terminal": {
+              "valid_samples": 16,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 16,
+                "min": 0.497615,
+                "p50": 0.720861,
+                "p95": 1.499127,
+                "p99": 1.499127,
+                "max": 1.499127
+              }
+            }
+          },
+          "watch_drain": {
+            "pod": {
+              "status": "complete",
+              "wait_limit_seconds": 15,
+              "terminal_observed": 16,
+              "deleted_without_terminal": 0,
+              "no_terminal_or_deletion": 0
+            },
+            "job": {
+              "status": "complete",
+              "wait_limit_seconds": 15,
+              "terminal_observed": 16,
+              "deleted_without_terminal": 0,
+              "no_terminal_or_deletion": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "load_64",
+      "status": "passed",
+      "seconds": 204.644,
+      "observations": {
+        "target_concurrency": 64,
+        "peak_observed_running_containers": 64,
+        "peak_container_timestamp_overlap": 64,
+        "pod_exit_to_persisted_terminal_seconds": {
+          "count": 64,
+          "min": 4.637841,
+          "p50": 10.245447,
+          "p95": 16.225871,
+          "p99": 17.226693,
+          "max": 17.226693
+        },
+        "result_capture": {
+          "captured": 64,
+          "unavailable": 0,
+          "expired": 0,
+          "missing": 0,
+          "unknown": 0,
+          "output_complete": 64,
+          "output_incomplete": 0,
+          "output_completeness_missing": 0
+        },
+        "clock_basis": "node agent-container finishedAt to API terminal event at; clock skew unqualified",
+        "negative_lag_samples": 0,
+        "configuration": {
+          "max_active_per_tenant": 64,
+          "max_active_total": 64,
+          "kubernetes_qps": 50,
+          "kubernetes_burst": 100,
+          "startup_timeout_seconds": 240,
+          "templates": {
+            "python": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "deadline_scope": "pod",
+              "max_timeout_seconds": 300
+            },
+            "bad-image": {
+              "resources": {
+                "cpu_milli": 100,
+                "memory_mib": 256,
+                "disk_mib": 32
+              },
+              "image": "registry.invalid/agentos-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "termination_grace_period_seconds": 10,
+              "deadline_scope": "pod",
+              "max_timeout_seconds": 300
+            },
+            "load": {
+              "resources": {
+                "cpu_milli": 25,
+                "memory_mib": 64,
+                "disk_mib": 16
+              },
+              "image": "python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e",
+              "termination_grace_period_seconds": 10,
+              "deadline_scope": "pod",
+              "max_timeout_seconds": 300
+            }
+          },
+          "resource_quota": {
+            "count/jobs.batch": "64",
+            "limits.cpu": "8",
+            "limits.memory": "8Gi",
+            "pods": "64",
+            "requests.cpu": "8",
+            "requests.memory": "8Gi"
+          },
+          "api_kubernetes_egress": null
+        },
+        "timing_breakdown": {
+          "boundaries": {
+            "container_started_at": "kubelet agent-container startedAt; node clock",
+            "container_finished_at": "kubelet agent-container finishedAt; node clock",
+            "pod_terminal_observed_at": "first harness receipt of terminal Pod phase; not API-server commit time",
+            "job_completion_at": "Job.status.completionTime; Job-controller clock and semantics",
+            "job_terminal_condition_at": "terminal Job condition lastTransitionTime; Job-controller clock",
+            "job_terminal_observed_at": "first harness receipt of terminal Job condition; not API-server commit time",
+            "job_success_criteria_condition_at": "SuccessCriteriaMet=True lastTransitionTime; Job-controller clock",
+            "job_success_criteria_observed_at": "first harness receipt of SuccessCriteriaMet=True; not API-server commit time",
+            "api_terminal_persisted_at": "Agent OS persisted terminal event at; API process clock",
+            "api_terminal_observed_at": "harness load poll returned terminal response; includes sequential polling/order delay"
+          },
+          "clock_skew": "unqualified",
+          "watch_delivery_lag": "unqualified",
+          "attribution": "observation boundaries, not isolated component service times",
+          "identity_counts": {
+            "matched": 64,
+            "unverified": 0,
+            "conflicting": 0
+          },
+          "timestamp_availability": {
+            "container_started_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "container_finished_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "pod_terminal_observed_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_completion_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_terminal_condition_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_terminal_observed_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_success_criteria_condition_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "job_success_criteria_observed_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "api_terminal_persisted_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            },
+            "api_terminal_observed_at": {
+              "valid": 64,
+              "missing": 0,
+              "invalid": 0,
+              "conflicting": 0
+            }
+          },
+          "complete_three_stage_samples": 64,
+          "intervals_seconds": {
+            "container_exit_to_observed_pod_terminal": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 2.483502,
+                "p50": 5.604233,
+                "p95": 6.896007,
+                "p99": 7.006106,
+                "max": 7.006106
+              }
+            },
+            "observed_pod_terminal_to_job_completion": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 4,
+              "distribution": {
+                "count": 64,
+                "min": -0.786047,
+                "p50": 2.952281,
+                "p95": 7.993894,
+                "p99": 8.034576,
+                "max": 8.034576
+              }
+            },
+            "job_completion_to_persisted_terminal": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 0.622052,
+                "p50": 1.637841,
+                "p95": 2.247913,
+                "p99": 2.431775,
+                "max": 2.431775
+              }
+            },
+            "container_exit_to_job_completion": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 3.0,
+                "p50": 9.0,
+                "p95": 14.0,
+                "p99": 15.0,
+                "max": 15.0
+              }
+            },
+            "observed_pod_terminal_to_observed_job_terminal": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 0.212839,
+                "p50": 4.538579,
+                "p95": 9.128037,
+                "p99": 9.442372,
+                "max": 9.442372
+              }
+            },
+            "observed_job_terminal_to_observed_api_terminal": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 0.271933,
+                "p50": 5.605482,
+                "p95": 10.498477,
+                "p99": 14.013359,
+                "max": 14.013359
+              }
+            },
+            "job_completion_to_observed_job_terminal": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 0.27294,
+                "p50": 1.30749,
+                "p95": 1.808134,
+                "p99": 1.858622,
+                "max": 1.858622
+              }
+            },
+            "observed_pod_terminal_to_observed_success_criteria": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 0.118902,
+                "p50": 3.938878,
+                "p95": 8.527333,
+                "p99": 9.042779,
+                "max": 9.042779
+              }
+            },
+            "observed_success_criteria_to_observed_job_terminal": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 0.009663,
+                "p50": 0.599636,
+                "p95": 0.603821,
+                "p99": 0.607778,
+                "max": 0.607778
+              }
+            },
+            "success_criteria_condition_to_job_completion": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 0.0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0,
+                "max": 0.0
+              }
+            },
+            "success_criteria_condition_to_persisted_terminal": {
+              "valid_samples": 64,
+              "unavailable_samples": 0,
+              "negative_samples": 0,
+              "distribution": {
+                "count": 64,
+                "min": 0.622052,
+                "p50": 1.637841,
+                "p95": 2.247913,
+                "p99": 2.431775,
+                "max": 2.431775
+              }
+            }
+          },
+          "watch_drain": {
+            "pod": {
+              "status": "complete",
+              "wait_limit_seconds": 15,
+              "terminal_observed": 64,
+              "deleted_without_terminal": 0,
+              "no_terminal_or_deletion": 0
+            },
+            "job": {
+              "status": "complete",
+              "wait_limit_seconds": 15,
+              "terminal_observed": 64,
+              "deleted_without_terminal": 0,
+              "no_terminal_or_deletion": 0
+            }
+          }
+        }
+      }
+    }
+  ],
+  "diagnostic_persisted_boundary_recomputation": {
+    "input": "docs/robustness/evidence/job-controller-timing-2026-11-24.json",
+    "source": {
+      "run_id": 45474391178,
+      "run_attempt": 1,
+      "head_sha": "6389b173db6afeae10b3022e6df8bbfa99f39e69",
+      "run_conclusion": "success",
+      "run_started_at": "2026-11-24T19:50:08Z",
+      "artifact_id": 14958598588,
+      "artifact_created_at": "2026-11-24T19:55:51Z",
+      "artifact_result_sha256": "ebdf2c9ea75e69418eff6214ee431da59d38aa9d4750bc06487c338658b58bb3"
+    },
+    "timestamp_arithmetic": "Decimal seconds preserving source fractional precision; receipt and process clocks remain unqualified",
+    "quantiles": "nearest rank for p50/p95; conventional even-sample median reported separately",
+    "intervals_seconds": {
+      "job_receipt_to_api_persisted": {
+        "count": 64,
+        "min": 0.021575371,
+        "median": 0.3474329885,
+        "p50_nearest_rank": 0.332023305,
+        "p95_nearest_rank": 0.776147907,
+        "max": 0.876526352,
+        "negative_samples": 0
+      },
+      "pod_receipt_to_job_receipt": {
+        "count": 64,
+        "min": 0.914715,
+        "median": 5.7578325,
+        "p50_nearest_rank": 5.752151,
+        "p95_nearest_rank": 10.729421,
+        "max": 10.813335,
+        "negative_samples": 0
+      },
+      "container_exit_to_pod_receipt": {
+        "count": 64,
+        "min": 1.56951,
+        "median": 3.650394,
+        "p50_nearest_rank": 3.625377,
+        "p95_nearest_rank": 4.532166,
+        "max": 4.823313,
+        "negative_samples": 0
+      },
+      "pod_receipt_to_api_persisted": {
+        "count": 64,
+        "min": 1.344428345,
+        "median": 6.195399353,
+        "p50_nearest_rank": 6.140751922,
+        "p95_nearest_rank": 11.332172315,
+        "max": 11.397055129,
+        "negative_samples": 0
+      }
+    },
+    "ratios": {
+      "greater_than_one_half": 64,
+      "at_least_95_percent": 32,
+      "job_wait_exceeds_api_interval": 64
+    },
+    "job_terminal_receipt_span_seconds": 11.751252,
+    "events_per_span_second_64_over_span": 5.4462281976422595,
+    "interarrival_rate_63_over_span": 5.361130882054099,
+    "samples": [
+      {
+        "run_id": "a86779f1a574d0bbe370dbfa8f8cc5d2",
+        "job_receipt_to_api_persisted_seconds": 0.619044275,
+        "pod_receipt_to_job_receipt_seconds": 10.773563,
+        "pod_receipt_to_api_persisted_seconds": 11.392607275,
+        "job_fraction_of_postpod_persisted_interval": 0.9456626336660938
+      },
+      {
+        "run_id": "291f3b25fe8c3e92e93f235c64e23fa8",
+        "job_receipt_to_api_persisted_seconds": 0.674770349,
+        "pod_receipt_to_job_receipt_seconds": 5.457495,
+        "pod_receipt_to_api_persisted_seconds": 6.132265349,
+        "job_fraction_of_postpod_persisted_interval": 0.8899639349249562
+      },
+      {
+        "run_id": "03f4ec264834fde534d34d72bad96984",
+        "job_receipt_to_api_persisted_seconds": 0.169805689,
+        "pod_receipt_to_job_receipt_seconds": 7.707982,
+        "pod_receipt_to_api_persisted_seconds": 7.877787689,
+        "job_fraction_of_postpod_persisted_interval": 0.9784450031273241
+      },
+      {
+        "run_id": "c347da09df85f0d9097c17909930b634",
+        "job_receipt_to_api_persisted_seconds": 0.321738562,
+        "pod_receipt_to_job_receipt_seconds": 9.030291,
+        "pod_receipt_to_api_persisted_seconds": 9.352029562,
+        "job_fraction_of_postpod_persisted_interval": 0.96559692632845
+      },
+      {
+        "run_id": "459e7961601081884041133f8cc18873",
+        "job_receipt_to_api_persisted_seconds": 0.072359276,
+        "pod_receipt_to_job_receipt_seconds": 7.431857,
+        "pod_receipt_to_api_persisted_seconds": 7.504216276,
+        "job_fraction_of_postpod_persisted_interval": 0.990357517249147
+      },
+      {
+        "run_id": "c75b85cb752fb0f6c79c14443f8e04a2",
+        "job_receipt_to_api_persisted_seconds": 0.120607235,
+        "pod_receipt_to_job_receipt_seconds": 7.354059,
+        "pod_receipt_to_api_persisted_seconds": 7.474666235,
+        "job_fraction_of_postpod_persisted_interval": 0.9838645323806889
+      },
+      {
+        "run_id": "4720f5f1943495caf6c67f2e8137fba6",
+        "job_receipt_to_api_persisted_seconds": 0.431984794,
+        "pod_receipt_to_job_receipt_seconds": 2.604063,
+        "pod_receipt_to_api_persisted_seconds": 3.036047794,
+        "job_fraction_of_postpod_persisted_interval": 0.8577147583599601
+      },
+      {
+        "run_id": "4117f6761eebb8088d39b85c6d97c98a",
+        "job_receipt_to_api_persisted_seconds": 0.822608922,
+        "pod_receipt_to_job_receipt_seconds": 5.318143,
+        "pod_receipt_to_api_persisted_seconds": 6.140751922,
+        "job_fraction_of_postpod_persisted_interval": 0.8660410105392953
+      },
+      {
+        "run_id": "1b137e417bd9e44c194b248d59838b9e",
+        "job_receipt_to_api_persisted_seconds": 0.279027668,
+        "pod_receipt_to_job_receipt_seconds": 8.045989,
+        "pod_receipt_to_api_persisted_seconds": 8.325016668,
+        "job_fraction_of_postpod_persisted_interval": 0.9664832301090115
+      },
+      {
+        "run_id": "e8f93c40c7ee0e42a1d9c926bb521003",
+        "job_receipt_to_api_persisted_seconds": 0.63008988,
+        "pod_receipt_to_job_receipt_seconds": 3.201267,
+        "pod_receipt_to_api_persisted_seconds": 3.83135688,
+        "job_fraction_of_postpod_persisted_interval": 0.8355439339809034
+      },
+      {
+        "run_id": "4af787e6b2c7ed771afb8425e711bfcd",
+        "job_receipt_to_api_persisted_seconds": 0.228658453,
+        "pod_receipt_to_job_receipt_seconds": 1.821955,
+        "pod_receipt_to_api_persisted_seconds": 2.050613453,
+        "job_fraction_of_postpod_persisted_interval": 0.888492659274483
+      },
+      {
+        "run_id": "ef2894c0a1c9d0069c2004b4b250ebb2",
+        "job_receipt_to_api_persisted_seconds": 0.779950009,
+        "pod_receipt_to_job_receipt_seconds": 4.748107,
+        "pod_receipt_to_api_persisted_seconds": 5.528057009,
+        "job_fraction_of_postpod_persisted_interval": 0.8589106429745215
+      },
+      {
+        "run_id": "cc7491f144eda593a101e51125e35664",
+        "job_receipt_to_api_persisted_seconds": 0.370363834,
+        "pod_receipt_to_job_receipt_seconds": 10.048375,
+        "pod_receipt_to_api_persisted_seconds": 10.418738834,
+        "job_fraction_of_postpod_persisted_interval": 0.9644521434022924
+      },
+      {
+        "run_id": "dbe5b6359161b26e32dc29759b379c21",
+        "job_receipt_to_api_persisted_seconds": 0.080402184,
+        "pod_receipt_to_job_receipt_seconds": 6.910316,
+        "pod_receipt_to_api_persisted_seconds": 6.990718184,
+        "job_fraction_of_postpod_persisted_interval": 0.9884987233237322
+      },
+      {
+        "run_id": "ba8cd0585213d722539a7a162604406b",
+        "job_receipt_to_api_persisted_seconds": 0.021575371,
+        "pod_receipt_to_job_receipt_seconds": 6.905234,
+        "pod_receipt_to_api_persisted_seconds": 6.926809371,
+        "job_fraction_of_postpod_persisted_interval": 0.9968852367887692
+      },
+      {
+        "run_id": "a6958a8bb0f9bc88b930744941650637",
+        "job_receipt_to_api_persisted_seconds": 0.480371945,
+        "pod_receipt_to_job_receipt_seconds": 3.476401,
+        "pod_receipt_to_api_persisted_seconds": 3.956772945,
+        "job_fraction_of_postpod_persisted_interval": 0.8785950188000995
+      },
+      {
+        "run_id": "cca24e77d8ba0c74580e453509c02276",
+        "job_receipt_to_api_persisted_seconds": 0.270989306,
+        "pod_receipt_to_job_receipt_seconds": 9.074574,
+        "pod_receipt_to_api_persisted_seconds": 9.345563306,
+        "job_fraction_of_postpod_persisted_interval": 0.9710034272812619
+      },
+      {
+        "run_id": "3adf72298731bc6d5c92fcd550472d75",
+        "job_receipt_to_api_persisted_seconds": 0.179601222,
+        "pod_receipt_to_job_receipt_seconds": 8.152565,
+        "pod_receipt_to_api_persisted_seconds": 8.332166222,
+        "job_fraction_of_postpod_persisted_interval": 0.9784448344866445
+      },
+      {
+        "run_id": "ec7a282204010863c132f8075b006574",
+        "job_receipt_to_api_persisted_seconds": 0.229066751,
+        "pod_receipt_to_job_receipt_seconds": 8.14032,
+        "pod_receipt_to_api_persisted_seconds": 8.369386751,
+        "job_fraction_of_postpod_persisted_interval": 0.9726304019858288
+      },
+      {
+        "run_id": "437dbc0fd4687a53521c64a6debac084",
+        "job_receipt_to_api_persisted_seconds": 0.023025998,
+        "pod_receipt_to_job_receipt_seconds": 7.344165,
+        "pod_receipt_to_api_persisted_seconds": 7.367190998,
+        "job_fraction_of_postpod_persisted_interval": 0.9968745213737161
+      },
+      {
+        "run_id": "bdfe6bb1a51765c3083537cab30dc7c6",
+        "job_receipt_to_api_persisted_seconds": 0.470206696,
+        "pod_receipt_to_job_receipt_seconds": 9.962451,
+        "pod_receipt_to_api_persisted_seconds": 10.432657696,
+        "job_fraction_of_postpod_persisted_interval": 0.954929346893047
+      },
+      {
+        "run_id": "72c4f576e6609cd4dd310ba7af95fba2",
+        "job_receipt_to_api_persisted_seconds": 0.436261093,
+        "pod_receipt_to_job_receipt_seconds": 0.960113,
+        "pod_receipt_to_api_persisted_seconds": 1.396374093,
+        "job_fraction_of_postpod_persisted_interval": 0.6875757755840862
+      },
+      {
+        "run_id": "3cd147593943d5068fca05ef2dd69041",
+        "job_receipt_to_api_persisted_seconds": 0.579249771,
+        "pod_receipt_to_job_receipt_seconds": 3.224986,
+        "pod_receipt_to_api_persisted_seconds": 3.804235771,
+        "job_fraction_of_postpod_persisted_interval": 0.8477355753248345
+      },
+      {
+        "run_id": "7efc15b1676c66f002e07c5bd4e1df46",
+        "job_receipt_to_api_persisted_seconds": 0.48644816,
+        "pod_receipt_to_job_receipt_seconds": 0.914715,
+        "pod_receipt_to_api_persisted_seconds": 1.40116316,
+        "job_fraction_of_postpod_persisted_interval": 0.6528254710893198
+      },
+      {
+        "run_id": "b5a75b2e46740e1e5e22f0df9b15402f",
+        "job_receipt_to_api_persisted_seconds": 0.876526352,
+        "pod_receipt_to_job_receipt_seconds": 4.828625,
+        "pod_receipt_to_api_persisted_seconds": 5.705151352,
+        "job_fraction_of_postpod_persisted_interval": 0.8463622964721655
+      },
+      {
+        "run_id": "db32ee49bb6cafe753b84155f8b6e54f",
+        "job_receipt_to_api_persisted_seconds": 0.667634129,
+        "pod_receipt_to_job_receipt_seconds": 10.729421,
+        "pod_receipt_to_api_persisted_seconds": 11.397055129,
+        "job_fraction_of_postpod_persisted_interval": 0.9414204703370089
+      },
+      {
+        "run_id": "e833ab96089b7d5e5b63801affcd1a94",
+        "job_receipt_to_api_persisted_seconds": 0.074081044,
+        "pod_receipt_to_job_receipt_seconds": 6.835983,
+        "pod_receipt_to_api_persisted_seconds": 6.910064044,
+        "job_fraction_of_postpod_persisted_interval": 0.9892792536323416
+      },
+      {
+        "run_id": "624970c90dff8d2bcef76fc9fcd5a9d0",
+        "job_receipt_to_api_persisted_seconds": 0.030219561,
+        "pod_receipt_to_job_receipt_seconds": 5.763514,
+        "pod_receipt_to_api_persisted_seconds": 5.793733561,
+        "job_fraction_of_postpod_persisted_interval": 0.9947840954918223
+      },
+      {
+        "run_id": "0d28671e728fa9328972c3eaa61f9612",
+        "job_receipt_to_api_persisted_seconds": 0.130628665,
+        "pod_receipt_to_job_receipt_seconds": 6.795662,
+        "pod_receipt_to_api_persisted_seconds": 6.926290665,
+        "job_fraction_of_postpod_persisted_interval": 0.981140169923839
+      },
+      {
+        "run_id": "f3cf925d72143d33c5a814e66b00cb42",
+        "job_receipt_to_api_persisted_seconds": 0.419968032,
+        "pod_receipt_to_job_receipt_seconds": 10.005954,
+        "pod_receipt_to_api_persisted_seconds": 10.425922032,
+        "job_fraction_of_postpod_persisted_interval": 0.9597188593286039
+      },
+      {
+        "run_id": "42bcf9eb3eb17e493e36b520d13a76eb",
+        "job_receipt_to_api_persisted_seconds": 0.079740547,
+        "pod_receipt_to_job_receipt_seconds": 5.752151,
+        "pod_receipt_to_api_persisted_seconds": 5.831891547,
+        "job_fraction_of_postpod_persisted_interval": 0.9863268124317196
+      },
+      {
+        "run_id": "26c6c94432fd396ee269ccac2373eb9c",
+        "job_receipt_to_api_persisted_seconds": 0.368205099,
+        "pod_receipt_to_job_receipt_seconds": 8.985099,
+        "pod_receipt_to_api_persisted_seconds": 9.353304099,
+        "job_fraction_of_postpod_persisted_interval": 0.9606336867589533
+      },
+      {
+        "run_id": "aa4c1e64e0ae0ae43ef1bd4299f2c61f",
+        "job_receipt_to_api_persisted_seconds": 0.362842672,
+        "pod_receipt_to_job_receipt_seconds": 1.455765,
+        "pod_receipt_to_api_persisted_seconds": 1.818607672,
+        "job_fraction_of_postpod_persisted_interval": 0.8004832611307713
+      },
+      {
+        "run_id": "38490f7e6060caa80a01af9ca6700eab",
+        "job_receipt_to_api_persisted_seconds": 0.332023305,
+        "pod_receipt_to_job_receipt_seconds": 1.049057,
+        "pod_receipt_to_api_persisted_seconds": 1.381080305,
+        "job_fraction_of_postpod_persisted_interval": 0.7595916010112098
+      },
+      {
+        "run_id": "631c2d2808ab5ee7bb6cac4777b06a7e",
+        "job_receipt_to_api_persisted_seconds": 0.101602357,
+        "pod_receipt_to_job_receipt_seconds": 2.086474,
+        "pod_receipt_to_api_persisted_seconds": 2.188076357,
+        "job_fraction_of_postpod_persisted_interval": 0.953565442688982
+      },
+      {
+        "run_id": "5a446f2ff4944e80b4726a670d9dc334",
+        "job_receipt_to_api_persisted_seconds": 0.479181178,
+        "pod_receipt_to_job_receipt_seconds": 2.274725,
+        "pod_receipt_to_api_persisted_seconds": 2.753906178,
+        "job_fraction_of_postpod_persisted_interval": 0.8259994542196056
+      },
+      {
+        "run_id": "fb8c7860e0ecf81494ec6be8964c98f0",
+        "job_receipt_to_api_persisted_seconds": 0.181652436,
+        "pod_receipt_to_job_receipt_seconds": 6.923208,
+        "pod_receipt_to_api_persisted_seconds": 7.104860436,
+        "job_fraction_of_postpod_persisted_interval": 0.97443265245865
+      },
+      {
+        "run_id": "6e4123738b5df28caa6abc8fef963eb4",
+        "job_receipt_to_api_persisted_seconds": 0.582904538,
+        "pod_receipt_to_job_receipt_seconds": 2.262711,
+        "pod_receipt_to_api_persisted_seconds": 2.845615538,
+        "job_fraction_of_postpod_persisted_interval": 0.7951569598155603
+      },
+      {
+        "run_id": "4e3bed8e0d66ceafdcead7cd61ba723d",
+        "job_receipt_to_api_persisted_seconds": 0.518837315,
+        "pod_receipt_to_job_receipt_seconds": 10.813335,
+        "pod_receipt_to_api_persisted_seconds": 11.332172315,
+        "job_fraction_of_postpod_persisted_interval": 0.9542155466244338
+      },
+      {
+        "run_id": "e6d09555d21cd7128be4ced925a88db1",
+        "job_receipt_to_api_persisted_seconds": 0.727631876,
+        "pod_receipt_to_job_receipt_seconds": 5.606214,
+        "pod_receipt_to_api_persisted_seconds": 6.333845876,
+        "job_fraction_of_postpod_persisted_interval": 0.8851200534011857
+      },
+      {
+        "run_id": "741baf27236e1d0ad3ea67d5254bb63e",
+        "job_receipt_to_api_persisted_seconds": 0.385088345,
+        "pod_receipt_to_job_receipt_seconds": 0.95934,
+        "pod_receipt_to_api_persisted_seconds": 1.344428345,
+        "job_fraction_of_postpod_persisted_interval": 0.7135672225060087
+      },
+      {
+        "run_id": "03ee2ec91b384ecf4ccc6f50bd36d25e",
+        "job_receipt_to_api_persisted_seconds": 0.125351347,
+        "pod_receipt_to_job_receipt_seconds": 1.687914,
+        "pod_receipt_to_api_persisted_seconds": 1.813265347,
+        "job_fraction_of_postpod_persisted_interval": 0.9308698270733566
+      },
+      {
+        "run_id": "d481d66aba5be137264ec71e6104e526",
+        "job_receipt_to_api_persisted_seconds": 0.534832991,
+        "pod_receipt_to_job_receipt_seconds": 2.050734,
+        "pod_receipt_to_api_persisted_seconds": 2.585566991,
+        "job_fraction_of_postpod_persisted_interval": 0.793146728411339
+      },
+      {
+        "run_id": "6170424516b959bfb254874a4922f1fc",
+        "job_receipt_to_api_persisted_seconds": 0.128051332,
+        "pod_receipt_to_job_receipt_seconds": 8.317897,
+        "pod_receipt_to_api_persisted_seconds": 8.445948332,
+        "job_fraction_of_postpod_persisted_interval": 0.9848387265743932
+      },
+      {
+        "run_id": "4187283429b694cea7e438278ca32f8c",
+        "job_receipt_to_api_persisted_seconds": 0.528655641,
+        "pod_receipt_to_job_receipt_seconds": 3.742611,
+        "pod_receipt_to_api_persisted_seconds": 4.271266641,
+        "job_fraction_of_postpod_persisted_interval": 0.8762297731718688
+      },
+      {
+        "run_id": "40f120d0e494485eafc1ec642bfc166c",
+        "job_receipt_to_api_persisted_seconds": 0.171292886,
+        "pod_receipt_to_job_receipt_seconds": 9.273062,
+        "pod_receipt_to_api_persisted_seconds": 9.444354886,
+        "job_fraction_of_postpod_persisted_interval": 0.9818629342006283
+      },
+      {
+        "run_id": "d568960babd5834b02db0a50e2a5e108",
+        "job_receipt_to_api_persisted_seconds": 0.073046193,
+        "pod_receipt_to_job_receipt_seconds": 7.404286,
+        "pod_receipt_to_api_persisted_seconds": 7.477332193,
+        "job_fraction_of_postpod_persisted_interval": 0.9902309819712994
+      },
+      {
+        "run_id": "43c5572e1483ea0b669c38d9f02c523d",
+        "job_receipt_to_api_persisted_seconds": 0.145208881,
+        "pod_receipt_to_job_receipt_seconds": 2.048902,
+        "pod_receipt_to_api_persisted_seconds": 2.194110881,
+        "job_fraction_of_postpod_persisted_interval": 0.9338188045748086
+      },
+      {
+        "run_id": "12bd55e7449b4ff19a796f71a51340e5",
+        "job_receipt_to_api_persisted_seconds": 0.080372784,
+        "pod_receipt_to_job_receipt_seconds": 6.169674,
+        "pod_receipt_to_api_persisted_seconds": 6.250046784,
+        "job_fraction_of_postpod_persisted_interval": 0.9871404508193838
+      },
+      {
+        "run_id": "db558baa996c0f10794b7514176d85ae",
+        "job_receipt_to_api_persisted_seconds": 0.071519954,
+        "pod_receipt_to_job_receipt_seconds": 8.244446,
+        "pod_receipt_to_api_persisted_seconds": 8.315965954,
+        "job_fraction_of_postpod_persisted_interval": 0.9913996817212077
+      },
+      {
+        "run_id": "efcd404ece8893d0a5f7e2c178b25285",
+        "job_receipt_to_api_persisted_seconds": 0.130952917,
+        "pod_receipt_to_job_receipt_seconds": 6.129985,
+        "pod_receipt_to_api_persisted_seconds": 6.260937917,
+        "job_fraction_of_postpod_persisted_interval": 0.9790841374349951
+      },
+      {
+        "run_id": "4ac9924510b2dcaa0a116d64dc2d5357",
+        "job_receipt_to_api_persisted_seconds": 0.627404678,
+        "pod_receipt_to_job_receipt_seconds": 4.537768,
+        "pod_receipt_to_api_persisted_seconds": 5.165172678,
+        "job_fraction_of_postpod_persisted_interval": 0.8785317128559318
+      },
+      {
+        "run_id": "59fc21980f8e5791c3b467d27712e7f5",
+        "job_receipt_to_api_persisted_seconds": 0.285320062,
+        "pod_receipt_to_job_receipt_seconds": 2.057026,
+        "pod_receipt_to_api_persisted_seconds": 2.342346062,
+        "job_fraction_of_postpod_persisted_interval": 0.8781904746575402
+      },
+      {
+        "run_id": "3365ef4dff56fca76566f2a12a120384",
+        "job_receipt_to_api_persisted_seconds": 0.680697558,
+        "pod_receipt_to_job_receipt_seconds": 4.094805,
+        "pod_receipt_to_api_persisted_seconds": 4.775502558,
+        "job_fraction_of_postpod_persisted_interval": 0.8574605395489352
+      },
+      {
+        "run_id": "a7930c906ae7c4aa8f79d3b529c42356",
+        "job_receipt_to_api_persisted_seconds": 0.5785552,
+        "pod_receipt_to_job_receipt_seconds": 4.705297,
+        "pod_receipt_to_api_persisted_seconds": 5.2838522,
+        "job_fraction_of_postpod_persisted_interval": 0.8905050372150833
+      },
+      {
+        "run_id": "b3b01c42c81199d9f26ca3fe1a7197fd",
+        "job_receipt_to_api_persisted_seconds": 0.317946611,
+        "pod_receipt_to_job_receipt_seconds": 10.092666,
+        "pod_receipt_to_api_persisted_seconds": 10.410612611,
+        "job_fraction_of_postpod_persisted_interval": 0.9694593754584574
+      },
+      {
+        "run_id": "15a3677e78998864d22f4e795fd13fdf",
+        "job_receipt_to_api_persisted_seconds": 0.728147069,
+        "pod_receipt_to_job_receipt_seconds": 4.606531,
+        "pod_receipt_to_api_persisted_seconds": 5.334678069,
+        "job_fraction_of_postpod_persisted_interval": 0.8635068396664294
+      },
+      {
+        "run_id": "d86fe7f010eb94ebbfcc6473b0df8160",
+        "job_receipt_to_api_persisted_seconds": 0.220342677,
+        "pod_receipt_to_job_receipt_seconds": 9.238103,
+        "pod_receipt_to_api_persisted_seconds": 9.458445677,
+        "job_fraction_of_postpod_persisted_interval": 0.9767041346406625
+      },
+      {
+        "run_id": "d2ac816409ab354d1a1543910fcb106d",
+        "job_receipt_to_api_persisted_seconds": 0.26941267,
+        "pod_receipt_to_job_receipt_seconds": 10.136286,
+        "pod_receipt_to_api_persisted_seconds": 10.40569867,
+        "job_fraction_of_postpod_persisted_interval": 0.9741091224583769
+      },
+      {
+        "run_id": "e6f60706914bcfd2204d4398e1aae318",
+        "job_receipt_to_api_persisted_seconds": 0.681252558,
+        "pod_receipt_to_job_receipt_seconds": 3.314554,
+        "pod_receipt_to_api_persisted_seconds": 3.995806558,
+        "job_fraction_of_postpod_persisted_interval": 0.8295081235511601
+      },
+      {
+        "run_id": "97072e869fc106a8383782bfe8c59485",
+        "job_receipt_to_api_persisted_seconds": 0.569021267,
+        "pod_receipt_to_job_receipt_seconds": 10.769125,
+        "pod_receipt_to_api_persisted_seconds": 11.338146267,
+        "job_fraction_of_postpod_persisted_interval": 0.9498135538561403
+      },
+      {
+        "run_id": "cdfa4a280d7a34b54c650b579b233d43",
+        "job_receipt_to_api_persisted_seconds": 0.776147907,
+        "pod_receipt_to_job_receipt_seconds": 4.90218,
+        "pod_receipt_to_api_persisted_seconds": 5.678327907,
+        "job_fraction_of_postpod_persisted_interval": 0.8633140037504354
+      },
+      {
+        "run_id": "aa3b0aa5eb8ec2dd74cd8df33cd96d8d",
+        "job_receipt_to_api_persisted_seconds": 0.384118483,
+        "pod_receipt_to_job_receipt_seconds": 2.631052,
+        "pod_receipt_to_api_persisted_seconds": 3.015170483,
+        "job_fraction_of_postpod_persisted_interval": 0.872604721634906
+      },
+      {
+        "run_id": "eab0d7505a89a9109a13c4b4f66c273f",
+        "job_receipt_to_api_persisted_seconds": 0.175085106,
+        "pod_receipt_to_job_receipt_seconds": 5.68545,
+        "pod_receipt_to_api_persisted_seconds": 5.860535106,
+        "job_fraction_of_postpod_persisted_interval": 0.970124723624512
+      }
+    ],
+    "paired_job_fraction": {
+      "unit": "fraction",
+      "count": 64,
+      "min": 0.6528254710893198,
+      "median": 0.9516894982725611,
+      "p50_nearest_rank": 0.9498135538561403,
+      "p95_nearest_rank": 0.9913996817212077,
+      "max": 0.9968852367887692,
+      "negative_samples": 0
+    }
+  },
+  "workflow_verification": {
+    "job_id": 138730572104,
+    "head_sha": "6389b173db6afeae10b3022e6df8bbfa99f39e69",
+    "job_conclusion": "success",
+    "campaign_step_conclusion": "success",
+    "artifact_upload_conclusion": "success",
+    "disposable_cluster_cleanup_conclusion": "success",
+    "job_completed_at": "2026-11-24T20:38:45Z"
+  }
+}

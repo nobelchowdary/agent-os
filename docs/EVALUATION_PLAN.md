@@ -4,6 +4,8 @@ Status: performance experiments with founder decisions updated November 24, 2026
 
 Before the EKS comparison, the founder selected the existing executable benefit gate: **20% lower fully accounted cost per correct task OR 25% less median operator time**. Operator steps remain a reported diagnostic, not a 50% acceptance gate. Keep correctness, trial-count and latency requirements in the registered protocol; do not reinterpret the exploratory targets below as alternative pass rules. Future registrations use the agreed Pod deadline scope, while historical admitted runs retain their stored Job clock; [decision 0007](decisions/0007-persisted-execution-deadline-scope.md) defines the compatibility boundary. No existing registration is rewritten by these decisions.
 
+For the next pilot the founder selected **two separate nominal elapsed profiles: one second and sixty seconds**, with both retained in the result. New format-2 protocols select caller-visible native outcome latency and allow `candidate p95 <= baseline p95 * 1.10 + 2 seconds`. This additive allowance and its confirmed-outcome rationale are fixed before registration/collection; they are not applied to previous diagnostics or format-1 registrations. The collector also reports terminal-Pod and validated-completion boundaries, exposing the different native guarantees rather than hiding reporting delay. [Decision 0009](decisions/0009-comparison-boundaries-and-latency-budget.md) defines the contract.
+
 November 19 update: EKS is the first available pilot environment. Follow the [EKS evaluation brief](EKS_EVALUATION_BRIEF.md) and [current capability map](ALPHA_CAPABILITY_MAP.md). First qualify and measure existing execution; compare upstream implementations before building idle-memory recovery or another policy gateway.
 
 ## 1. Unit of value
@@ -48,7 +50,7 @@ Start with **Agent OS versus upstream Agent Sandbox on the AWS reference deploym
 
 | Step | Work to compare | Evidence to collect |
 | --- | --- | --- |
-| 1. Execution baseline | The existing deterministic cold-claim fixture, with cold-image and cached-image trials registered separately | Correct completion rate, admission-to-readiness and completion latency, throughput, resource observations and all failed trials |
+| 1. Execution baseline | Separate one-second and sixty-second elapsed deterministic cold-claim fixtures, with cold-image and cached-image trials registered separately | Correct completion rate, admission-to-readiness, terminal-Pod/native caller-outcome/validated-completion latency, resource observations and all failed trials |
 | 2. Failure and operations | Equivalent task outcomes under API restart, worker loss, deadline and cancellation; installation, upgrade and cleanup from comparable starting states | Lost or duplicated work, recovery/stop time, retained results, leaked resources, operator time and steps |
 | 3. Real agent work | One coding task set with test-based grading, then one research task set with a frozen evidence/citation rubric | Task quality, total time and cost per correct task, model usage and retry waste; extend the harness before collecting these results |
 | 4. Fleet economics | The measured task mix at declared concurrency and active/idle ratios, followed by a capacity-reduction experiment | Correct tasks per node-hour, tail latency, fairness, idle cost and actual fully accounted billing |
@@ -59,7 +61,7 @@ For real-agent trials, keep the agent harness/version, prompts, tools, repositor
 
 Report input, output and cached-token usage separately, including failed and repeated attempts in the numerator for **tokens per correctly completed task**. Report the fraction spent on work discarded after infrastructure failures, with an explicit attribution rule. A runtime might reduce that waste; fewer reasoning tokens or better answers require separate evidence. The existing decision tool does not ingest token or task-rubric scores: retain them in a versioned supplemental report until a new protocol supports them.
 
-Choose the primary benefit and thresholds before each new registration. Keep existing registrations and example thresholds unchanged; the exploratory targets below and the executable example protocol are proposals, not interchangeable acceptance rules. Publish regressions and ties alongside wins, with sample counts and uncertainty.
+Use the named short/minute format-2 pilot protocols for the selected next comparison. Keep existing registrations and legacy examples unchanged: their strict format-1 ratio and original timing metric remain applicable. Synthetic wait durations probe elapsed overhead, not CPU efficiency or real-agent task quality. Publish each profile, regressions and ties separately, with sample counts and uncertainty. The exploratory targets below are not substitutes for a registered decision rule.
 
 ## 4. Initial engineering gates
 

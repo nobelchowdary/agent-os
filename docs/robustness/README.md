@@ -8,6 +8,8 @@ The [November 24 reporting/deadline review](REPORTING_REVIEW_2026-11-24.md) reco
 
 The [Job-controller timing follow-up](JOB_CONTROLLER_TIMING_2026-11-24.md) retains all 64 diagnostic samples and the [prewritten conditional decision](../decisions/0008-earlier-success-observation.md). Neither acceleration gate passed; runtime outcome behavior remains unchanged. EKS billing preparation is documented, with no AWS account changes or new cost/competitive acceptance claim.
 
+The timing report now also verifies the successful full regression at `6389b17` and corrects the interpretation of the historical polling denominator. The [comparison contract update](COMPARISON_CONTRACT_2026-11-24.md) implements [decision 0009](../decisions/0009-comparison-boundaries-and-latency-budget.md): keep Job authority, stop reporting-delay tuning, and prepare separate one-second/minute profiles with three observed boundaries and a caller-outcome allowance of baseline p95 × 1.10 + 2 seconds. Existing registered rules and the 20% cost / 25% operator-time benefit gate remain unchanged.
+
 At audited commit `e2ed1a4`, 41 whole requirements were Partial and 29 Missing. No whole requirement was accepted as Implemented against its full requested acceptance test. These labels include the EKS evidence gate and do not erase narrower implemented features. All EKS outcomes remain Not run. Machine-readable records are in `audit-core.json`, `audit-security.json` and `audit-platform.json`; do not silently update this frozen baseline after code changes.
 
 | Phase | Status | Next acceptance work |

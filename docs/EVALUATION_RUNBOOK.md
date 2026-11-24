@@ -33,18 +33,24 @@ Then extend the live experiment to restore onto a different eligible worker/inst
 
 ## 3. Register the comparison before collection
 
-Copy `examples/evaluation/environment.example.json` outside Git and replace its placeholders with the actual private environment record. Review `evaluation/decision.example.json` with a partner before registering: its proposed gates are 30 trials, 100% deterministic correctness, at most 10% p95 latency regression, and either 20% lower fully accounted cost or 25% less median operator time. These are engineering defaults, not achieved results or commercial commitments.
+Copy `examples/evaluation/environment.example.json` outside Git and replace its placeholders with the actual private environment record. The selected next pilot uses separate `short` and `minute` profiles and new format-2 protocols: 30 trials per arm per profile, 100% deterministic correctness, caller-visible outcome p95 bounded by `baseline p95 * 1.10 + 2 seconds`, and either 20% lower fully accounted cost or 25% less median operator time. The additive allowance is a precollection founder decision for a confirmed native outcome, with its rationale in the hashed policy. These are pilot gates, not achieved results or commercial commitments. Review them with the partner before registration; retain them after collection begins. [Decision 0009](decisions/0009-comparison-boundaries-and-latency-budget.md) explains the boundaries and compatibility.
 
 ```sh
 mkdir -p evidence
-python3 scripts/evaluate.py register \
-  --context YOUR_EXPLICIT_CONTEXT --namespace agentos-workloads \
-  --protocol evaluation/decision.example.json \
-  --workload examples/evaluation/python-workload.json \
-  --environment /absolute/private/environment.json \
-  --evidence-dir evidence/eks-comparison-01 \
-  --upstream-controller-ref 'YOUR_REGISTRY/controller@sha256:REPLACE_WITH_ACTUAL_64_HEX_DIGEST'
+for profile in short minute; do
+  python3 scripts/evaluate.py register \
+    --context YOUR_EXPLICIT_CONTEXT --namespace agentos-workloads \
+    --protocol "evaluation/decision.${profile}-confirmed.example.json" \
+    --workload "examples/evaluation/python-${profile}-workload.json" \
+    --environment /absolute/private/environment.json \
+    --evidence-dir "evidence/eks-${profile}-confirmed-v2" \
+    --upstream-controller-ref 'YOUR_REGISTRY/controller@sha256:REPLACE_WITH_ACTUAL_64_HEX_DIGEST'
+done
 ```
+
+The new commands include deterministic file/hash work and a bounded wait establishing one or sixty seconds of minimum application elapsed time. They share the pinned image, resources and sandbox policy. They do not model one/sixty seconds of CPU demand or a real agent. Run both profile/arm combinations from the declared reset/cache state, sequentially or under an explicitly registered schedule; do not accidentally run the independent evidence directories against competing capacity. Never pool the two profiles or use a long task's result to suppress a short-tool regression.
+
+`evaluation/decision.example.json`, `python-workload.json` and existing registrations remain legacy format-1 inputs with the original strict 1.10 p95 ratio on validated completion. Do not edit them to adopt the new rule or reinterpret earlier data. A new format-2 decision uses only its selected boundary; absent selected evidence on a correct trial prevents a pass, even when another timing field is available.
 
 The new private registration stores canonical JSON hashes, workload, context, trial count, cache declaration and polling interval before resource creation. Inputs cannot be switched through collector flags. New registrations require an explicit workload `deadline_scope`; comparisons with the upstream arm require `pod`, matching new Agent OS and direct-Job Pod deadlines. Loading an existing registration never adds the field or changes its hash: omitted legacy scopes retain Job deadlines for Agent OS/direct Jobs and the upstream native Pod deadline. That mismatch is reported and is not matched deadline/failure evidence. The deterministic collector does not collect fault qualification; use a separately registered failure protocol for that claim. Local hashes detect accidental input drift; an operator can still rewrite local files, so this is not an immutable or independently timestamped audit system.
 
@@ -60,21 +66,23 @@ With the upstream controller installed and Agent OS authenticated through a loca
 
 ```sh
 python3 scripts/evaluate.py collect --context YOUR_EXPLICIT_CONTEXT \
-  --evidence-dir evidence/eks-comparison-01 --baseline agent-sandbox --execute
+  --evidence-dir evidence/eks-short-confirmed-v2 --baseline agent-sandbox --execute
 python3 scripts/evaluate.py collect --context YOUR_EXPLICIT_CONTEXT \
-  --evidence-dir evidence/eks-comparison-01 --baseline agentos --execute \
+  --evidence-dir evidence/eks-short-confirmed-v2 --baseline agentos --execute \
   --api-url http://127.0.0.1:8080 --token-env AGENTOS_EVAL_TOKEN
 ```
 
 The upstream arm creates experiment-owned v1beta1 templates, a pool with **zero warm replicas**, and claims. This is a cold-claim execution measurement compatible with the blueprint's controller contract. It does not execute the complete AWS Bedrock/IRSA/FQDN reference workflow and is not a warm-pool performance result. The optional `direct-job` arm is a diagnostic floor, not the AWS blueprint.
 
-The fixed fixture writes/reads scratch, performs deterministic work and emits an exact readiness line and completion digest. Only validated output counts as correct. Timings include client observation and polling overhead; readiness is first observed output, not a kernel timestamp. Failures and uncertain outcomes are retained. Existing arm files are not replaced, collections are serialized, and unresolved executions stop the arm. Retry a failed experiment only with a new registration and retain the original.
+The fixed fixture writes/reads scratch, performs deterministic work and emits an exact readiness line and completion digest. Only validated output counts as correct. Each arm records first observed terminal Pod, native caller-visible outcome and validated completion as separate monotonic offsets and UTC receipt times. Agent OS uses its authenticated terminal API response, direct Jobs use their terminal Job condition, and the upstream collector uses its selected Pod phase; their native guarantees are explicitly different. Polling/transport and output retrieval still affect the observations. Missing or already-cleaned-up Pod evidence remains missing, never zero or an inferred timestamp from API state. Original `elapsed_seconds` remains the validated-completion measurement for compatibility.
+
+Readiness is first observed output, not a kernel timestamp. Failures and uncertain outcomes are retained. Existing arm files are not replaced, collections are serialized, and unresolved executions stop the arm. Retry a failed experiment only with a new registration and retain the original. The commands below illustrate the short profile; repeat them with the separate minute evidence directory and keep both decisions.
 
 Cleanup is explicit and limited to recorded, owned resource identities:
 
 ```sh
 python3 scripts/evaluate.py cleanup --context YOUR_EXPLICIT_CONTEXT \
-  --evidence-dir evidence/eks-comparison-01 --execute \
+  --evidence-dir evidence/eks-short-confirmed-v2 --execute \
   --api-url http://127.0.0.1:8080 --token-env AGENTOS_EVAL_TOKEN
 ```
 
@@ -84,12 +92,12 @@ Use the read-only node sampler in a separate terminal during an arm, with a fres
 
 ```sh
 python3 scripts/sample_resources.py --context YOUR_EXPLICIT_CONTEXT \
-  --node-selector 'agent-sandbox/runtime=gvisor' --experiment-id eks-first-comparison \
+  --node-selector 'agent-sandbox/runtime=gvisor' --experiment-id eks-short-confirmed-v2 \
   --duration-seconds 120 --interval-seconds 5 \
-  --output evidence/eks-comparison-01/upstream-node-samples.json --execute
+  --output evidence/eks-short-confirmed-v2/upstream-node-samples.json --execute
 ```
 
-Replace the selector with the labels of the actual eligible nodes and record the matching arm/window. The sampler records CPU-window usage, memory working set and allocatable capacity through Metrics API. Missing/stale metrics or changing node identities fail the observation; repeated scrapes are marked and do not count as independent measurements. Observations include system and unrelated work and can cover time before a task started. They cannot establish per-task attribution, CPU time, physical snapshot reclamation or billing savings. See the [resource-sampling details](../examples/evaluation/README.md).
+Replace the selector with the labels of the actual eligible nodes and record the matching arm/window. Adjust the experiment ID and duration for the minute profile; a 120-second sample is not coverage of thirty minute-long tasks. The sampler records CPU-window usage, memory working set and allocatable capacity through Metrics API. Missing/stale metrics or changing node identities fail the observation; repeated scrapes are marked and do not count as independent measurements. Observations include system and unrelated work and can cover time before a task started. They cannot establish per-task attribution, CPU time, physical snapshot reclamation or billing savings. See the [resource-sampling details](../examples/evaluation/README.md).
 
 Warm-pool performance requires a separately registered resident workload/dispatch protocol: prestarting this one-shot fixture would complete the work before measurement. Record warm pool size, idle resources and safe reuse behavior. No warm-pool result is claimed by this collector.
 
@@ -99,7 +107,7 @@ Time the same installation/upgrade/failure-recovery task in reset environments, 
 
 ```sh
 python3 scripts/operator_journal.py start --directory evidence/ops-upstream-1 \
-  --registration evidence/eks-comparison-01/registration.json --arm agent-sandbox \
+  --registration evidence/eks-short-confirmed-v2/registration.json --arm agent-sandbox \
   --task-ref install-standard-gvisor-v1 --operator operator-a --phase install
 python3 scripts/operator_journal.py step --directory evidence/ops-upstream-1 \
   --name runtime-install --runbook-ref installation-step-2 \
@@ -113,11 +121,11 @@ Repeat with at least three completed sessions per arm, then use `summary --sessi
 ## 6. Apply the preregistered decision
 
 ```sh
-python3 scripts/decision_report.py --protocol evaluation/decision.example.json \
-  --registration evidence/eks-comparison-01/registration.json \
-  --baseline evidence/eks-comparison-01/agent-sandbox.json \
-  --candidate evidence/eks-comparison-01/agentos.json \
-  --output evidence/eks-comparison-01/decision.json
+python3 scripts/decision_report.py --protocol evaluation/decision.short-confirmed.example.json \
+  --registration evidence/eks-short-confirmed-v2/registration.json \
+  --baseline evidence/eks-short-confirmed-v2/agent-sandbox.json \
+  --candidate evidence/eks-short-confirmed-v2/agentos.json \
+  --output evidence/eks-short-confirmed-v2/decision.json
 ```
 
 The decision reads the actual registration and binds both arms to its full trial count and canonical inputs; two equally truncated reports cannot pass by repeating a registration hash. Unaugmented collector output must yield `insufficient_evidence`: it cannot qualify isolation or invent AWS billing. Use optional `--supplemental` for a private sidecar with matching experiment/protocol/registration/workload/environment hashes and `arms` keyed by arm name. Allowed arm fields are `qualification` (`status` and `evidence_ref`), `billing_complete`, `full_cost_usd`, `node_reduction_demonstrated` and `cost_accounting_ref`. It cannot replace measured trials. Supply optional `--baseline-operations` / `--candidate-operations` journal summaries for the operating-effort route. Raw trial files remain intact.

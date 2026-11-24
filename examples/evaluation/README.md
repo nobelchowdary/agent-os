@@ -17,38 +17,49 @@ The upstream arm is not a warm-capacity benchmark or the complete AWS Bedrock/FQ
 1. Qualify the chosen runtime, nodes and CNI separately. Install the workload ServiceAccount and the `agentos-deny-all` NetworkPolicy in the selected namespace. The collector checks declarations but always reports `qualification.status=not_verified`; dynamic conformance evidence is a separate gate.
 2. Prepare the Agent OS API with matching administrator-owned image, resources and runtime profile. The supplied `python-workload.json` matches `config/gvisor.example.json`; `python-nitro-workload.json` matches `config/nitro-isolated.example.json`. Review and replace the digest-pinned image for your architecture as needed **before registration**, updating the API template too. The API command override is used for the exact registered deterministic command.
 3. For the upstream arm, install the pinned Agent Sandbox controllers and CRDs separately. The collector creates only its labelled template, zero-capacity pool and sequential claims. Template networking is `Unmanaged` so the same administrator-installed default-deny policy selects every task.
-4. Copy `environment.example.json` to a private location and record the actual stack, nodes, versions, cache condition and dynamic qualification reference. Its path and canonical JSON hash are retained; its contents are not copied. Keep the original file with the evidence. Prepare the decision protocol at `evaluation/decision.example.json`, agreeing its criteria before trials.
+4. Copy `environment.example.json` to a private location and record the actual stack, nodes, versions, cache condition and dynamic qualification reference. Its path and canonical JSON hash are retained; its contents are not copied. Keep the original file with the evidence. Prepare the selected short/minute format-2 protocols below, agreeing their criteria before trials. Keep legacy registrations and example files unchanged.
 
 Nitro is an explicit alternative profile: `isolated-sandbox` class/handler, provider network annotation, explicit placement and memory-backed scratch. The tool never substitutes ordinary containers, and does not equate Nitro and gVisor measurements. Use a separate registration per runtime/environment.
 
+## Selected pilot contract
+
+| Profile | Protocol | Workload |
+| --- | --- | --- |
+| Nominal one-second elapsed tool | `evaluation/decision.short-confirmed.example.json` | `examples/evaluation/python-short-workload.json` |
+| Nominal sixty-second elapsed task | `evaluation/decision.minute-confirmed.example.json` | `examples/evaluation/python-minute-workload.json` |
+
+Register and report both profiles separately, with at least 30 trials per arm per profile. The new caller-outcome allowance is `candidate p95 <= baseline p95 * 1.10 + 2 seconds`, with the selected boundary, additive allowance and rationale hashed before collection. Correctness, dynamic qualification and the 20% cost / 25% median operator-time benefit routes remain required. A latency pass alone proves no value route.
+
+The fixtures use the same pinned image/resources/runtime, deterministic file/hash checks and a bounded wait for their nominal application elapsed duration. They are not CPU-throughput or real-agent benchmarks. Keep the short result visible alongside the minute result; do not pool distributions. [Decision 0009](../../docs/decisions/0009-comparison-boundaries-and-latency-budget.md) records the precollection choice.
+
 ## Register, inspect and collect
 
-Use Python 3.10+ on Linux/macOS and a compatible `kubectl` on `PATH`. Supply the explicit kubeconfig context on every command. In this example, `/private/agentos-evidence` is a new directory under an existing private parent; replace the controller image with the actual digest.
+Use Python 3.10+ on Linux/macOS and a compatible `kubectl` on `PATH`. Supply the explicit kubeconfig context on every command. In this example, `/private/agentos-evidence-short-v2` is a new directory under an existing private parent; replace the controller image with the actual digest. Repeat the block for the minute protocol/workload and a different evidence directory from the declared reset/cache state.
 
 ```sh
 python3 scripts/evaluate.py register \
   --context "$CTX" --namespace agentos-workloads \
-  --protocol evaluation/decision.example.json \
-  --workload examples/evaluation/python-workload.json \
+  --protocol evaluation/decision.short-confirmed.example.json \
+  --workload examples/evaluation/python-short-workload.json \
   --environment /private/environment.json \
-  --evidence-dir /private/agentos-evidence \
+  --evidence-dir /private/agentos-evidence-short-v2 \
   --upstream-controller-ref 'registry.example/controller@sha256:REPLACE_WITH_ACTUAL_DIGEST'
 
 python3 scripts/evaluate.py render --context "$CTX" \
-  --evidence-dir /private/agentos-evidence --baseline agent-sandbox
+  --evidence-dir /private/agentos-evidence-short-v2 --baseline agent-sandbox
 
 python3 scripts/evaluate.py collect --context "$CTX" \
-  --evidence-dir /private/agentos-evidence --baseline agent-sandbox --execute
+  --evidence-dir /private/agentos-evidence-short-v2 --baseline agent-sandbox --execute
 
 python3 scripts/evaluate.py collect --context "$CTX" \
-  --evidence-dir /private/agentos-evidence --baseline agentos --execute \
+  --evidence-dir /private/agentos-evidence-short-v2 --baseline agentos --execute \
   --api-url http://127.0.0.1:8080 --token-env AGENTOS_EVAL_TOKEN
 
 python3 scripts/evaluate.py collect --context "$CTX" \
-  --evidence-dir /private/agentos-evidence --baseline direct-job --execute
+  --evidence-dir /private/agentos-evidence-short-v2 --baseline direct-job --execute
 
 python3 scripts/evaluate.py cleanup --context "$CTX" \
-  --evidence-dir /private/agentos-evidence --execute \
+  --evidence-dir /private/agentos-evidence-short-v2 --execute \
   --api-url http://127.0.0.1:8080 --token-env AGENTOS_EVAL_TOKEN
 ```
 
@@ -59,6 +70,10 @@ Registration fixes the requested count, observer timeout, polling interval, cach
 ## Interpret the evidence
 
 Readiness means the client first observed the exact readiness line from the workload. Completion requires successful execution status and **exactly** the two registered output lines in order; the final line includes the expected digest from file readback and deterministic computation. Logs are hashed, not stored. Timings include client calls, polling and the alpha's reconciliation delay. A fast task can become ready and finish between polls, so readiness is an observed upper bound, not an internal process-start timestamp. The current tool does not collect CPU/RAM time series or infer isolated hardware execution.
+
+Every arm also records three distinct events: first observed terminal Pod, native outcome visible to the caller, and validated completion. They carry harness-monotonic elapsed offsets, UTC receipt times, source labels and explicit missing status. Agent OS uses its authenticated terminal API response; direct Jobs use their Job condition; the upstream cold-claim collector uses its selected Pod phase. The underlying guarantees differ, and a Pod phase never substitutes for an Agent OS API outcome. A previously verified execution can already have been cleaned up when its API outcome arrives; its missing Pod observation stays missing. UID/owner/profile drift still fails the trial.
+
+Original `elapsed_seconds` retains its validated-output, pre-cleanup meaning. Legacy format-1 protocols continue using that field and the strict ratio. New format-2 decisions name a boundary explicitly and emit both phase coverage and the applied `baseline p95 * 1.10 + 2 seconds` terms. Missing selected timing on any correct trial prevents a latency pass; another field or a supplemental cost/operator record cannot fill the gap. Use new registration/evidence directories for changed rules, workloads, rationale or observation settings. The old `decision.example.json` / `python-workload.json` files remain unchanged compatibility examples.
 
 New registrations require explicit `deadline_scope`; an upstream comparison requires `pod` so all three arms set Pod deadlines and no Job deadline. The Pod clock starts at kubelet `Pod.status.startTime`, including image pulls, and excludes scheduling before node acknowledgement. Already registered workloads that omit the field keep their original JSON/hashes and native behavior: Agent OS/direct Jobs use Job clocks, while upstream uses its native Pod clock. Reports disclose this mismatch; it is not matched deadline/failure proof. The current deterministic collector labels fault qualification as not collected, and all arms also have the separately registered client observation timeout. Deadline compatibility, network enforcement and recovery still need dynamic qualification. Cache states are operator declarations; `uncontrolled` is the default and cold/cached samples must not be pooled as if equivalent.
 
@@ -75,9 +90,9 @@ Run the read-only sampler in another terminal across each collection window, usi
 ```sh
 python3 scripts/sample_resources.py --context "$CTX" \
   --node-selector 'agent-sandbox/runtime=gvisor' \
-  --experiment-id eks-gvisor-001 \
+  --experiment-id eks-short-confirmed-v2 \
   --duration-seconds 120 --interval-seconds 5 \
-  --output /private/agentos-evidence/agentos-node-samples.json --execute
+  --output /private/agentos-evidence-short-v2/agentos-node-samples.json --execute
 ```
 
 For the Nitro profile, select `eks.amazonaws.com/nitro-sandbox=true`. The selector must be explicit and supports comma-separated `key=value` terms. This script runs only Kubernetes `get` requests. It requires permission to read Node objects and the `metrics.k8s.io/v1beta1` NodeMetrics API; it does not install Metrics Server or modify the cluster. Missing, stale, invalid or unavailable metrics produce failed evidence and a nonzero exit, never substituted zero usage. Output files are private and cannot overwrite a prior report.

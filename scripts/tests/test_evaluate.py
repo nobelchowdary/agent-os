@@ -145,6 +145,23 @@ class FakeAPI:
         return self.record()
 
 
+class ObservationClock:
+    """Elapsed time advances with simulated I/O, independently of wall receipts."""
+    def __init__(self):
+        self.elapsed = 0.0
+        self.wall_adjustment = 0
+
+    def monotonic(self):
+        return self.elapsed
+
+    def advance(self, seconds=1):
+        self.elapsed += seconds
+
+    def now(self):
+        return (ev.dt.datetime(2026, 1, 1, tzinfo=ev.dt.timezone.utc)
+                + ev.dt.timedelta(seconds=self.elapsed + self.wall_adjustment)).isoformat()
+
+
 class EvaluationTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -381,7 +398,18 @@ class EvaluationTest(unittest.TestCase):
                 self.assertEqual(result["deadline_contract"]["scope"], "pod")
                 self.assertTrue(result["deadline_contract"]["matches_registered_scope"])
                 self.assertEqual(result["deadline_contract"]["fault_qualification"], "not_collected")
+                self.assertEqual(result["timing_contract"], ev.timing_contract(baseline))
+                self.assertNotIn("latency_policy", result)
+                for trial in result["trials"]:
+                    events = trial["timing"]["events"]
+                    self.assertEqual(trial["timing"]["clock_basis"], "harness_monotonic_offsets")
+                    self.assertTrue(all(event["status"] == "observed" for event in events.values()))
+                    self.assertEqual(events["validated_completion"]["elapsed_seconds"], trial["elapsed_seconds"])
+                    self.assertEqual(events["outcome_visible_to_caller"]["source"],
+                                     result["timing_contract"]["events"]["outcome_visible_to_caller"]["source"])
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                maximum = dict(result, trials=[dict(copy.deepcopy(result["trials"][0]), index=i) for i in range(200)])
+                self.assertLess(len(ev.encoded(maximum)), ev.MAX_JSON)
             ev.cleanup(self.args)
         self.assertFalse(kube.objects)
         self.assertEqual(len(api.submissions), 2)
@@ -389,6 +417,277 @@ class EvaluationTest(unittest.TestCase):
         actions = [op[0] for op in kube.operations]
         self.assertIn("delete", actions)
         self.assertEqual(ev.read_json(Path(self.args.evidence_dir) / "agent-sandbox.json")["pool_replicas"], 0)
+
+    def test_v2_protocol_policy_is_validated_and_bound_without_rewriting_legacy_inputs(self):
+        old = copy.deepcopy(self.protocol)
+        ev.validate_protocol(old)
+        self.assertEqual(old, self.protocol)
+        self.protocol.update(format_version=2, latency_policy={
+            "boundary": "outcome_visible_to_caller", "mode": "ratio_plus_absolute",
+            "absolute_allowance_seconds": 2, "rationale": "A confirmed outcome may add at most two seconds."})
+        self.protocol_path.write_text(json.dumps(self.protocol))
+        registration = self.registered()
+        raw = (Path(self.args.evidence_dir) / "registration.json").read_bytes()
+        kube = FakeKube(registration)
+        with patch.object(ev, "Kubectl", return_value=kube):
+            result = ev.read_json(ev.collect(self.args))
+        self.assertEqual(result["latency_policy"], self.protocol["latency_policy"])
+        self.assertEqual(raw, (Path(self.args.evidence_dir) / "registration.json").read_bytes())
+        for key, values in {
+            "boundary": [None, [], True, "elapsed_seconds", ""],
+            "mode": [None, "max_ratio_or_absolute"],
+            "absolute_allowance_seconds": [True, None, -1, 3601, float('inf')],
+            "rationale": [None, "", " \n ", "x" * 1025, "\ud800"],
+        }.items():
+            for invalid in values:
+                protocol = copy.deepcopy(self.protocol)
+                protocol["latency_policy"][key] = invalid
+                with self.subTest(key=key, value=repr(invalid)), self.assertRaises(ev.Failure):
+                    ev.validate_protocol(protocol)
+        extra = copy.deepcopy(self.protocol)
+        extra["latency_policy"]["unexpected"] = 1
+        with self.assertRaisesRegex(ev.Failure, "latency_policy_fields"):
+            ev.validate_protocol(extra)
+        for version in (True, 3):
+            extra["format_version"] = version
+            with self.assertRaisesRegex(ev.Failure, "protocol_fields"):
+                ev.validate_protocol(extra)
+        # A locally rehashed but unsupported policy must fail before collection,
+        # rather than being accepted merely because its stored digest matches.
+        registration["protocol"]["latency_policy"]["rationale"] = " "
+        registration["protocol_sha256"] = ev.digest(registration["protocol"])
+        ev.write_json(Path(self.args.evidence_dir) / "registration.json", registration)
+        with patch.object(ev, "Kubectl", side_effect=AssertionError("must reject offline")), \
+             self.assertRaisesRegex(ev.Failure, "latency_policy_rationale"):
+            ev.collect(self.args)
+
+    def test_delayed_agent_api_outcome_retains_first_pod_time_through_cleanup_absence(self):
+        registration = self.registered()
+        clock, kube = ObservationClock(), FakeKube(registration)
+        api = FakeAPI(kube)
+        original_api, original_get = api.call, kube.get
+        polls = 0
+
+        def api_call(path, body=None, key=None):
+            nonlocal polls
+            clock.advance()
+            value = original_api(path, body, key)
+            if path == "/v1/runs":
+                value["state"] = "running"
+            elif path == "/v1/runs/" + api.run_id:
+                polls += 1
+                value["state"] = "succeeded" if polls >= 3 else "running"
+                if polls >= 3:
+                    kube.objects.pop(("Job", "agentos-" + api.run_id), None)
+            return value
+
+        def get(resource, name=None, selector=None):
+            clock.advance(.5)
+            value = original_get(resource, name, selector)
+            if resource == "pods" and not name and polls < 2:
+                for pod in value["items"]:
+                    pod["status"]["phase"] = "Running"
+            return value
+
+        api.call, kube.get = api_call, get
+        result = {}
+        with patch.object(ev.time, "monotonic", side_effect=clock.monotonic), \
+             patch.object(ev.time, "sleep", side_effect=clock.advance), patch.object(ev, "now", side_effect=clock.now):
+            ev.trial(kube, registration, "agentos", 0, result, lambda: None, api)
+        self.assertTrue(result["correct"], result)
+        self.assertEqual(result["cleanup"], "observed_objects_absent")
+        timing, events = result["timing"], result["timing"]["events"]
+        self.assertLess(events["pod_terminal"]["elapsed_seconds"], events["outcome_visible_to_caller"]["elapsed_seconds"])
+        self.assertLess(events["outcome_visible_to_caller"]["elapsed_seconds"], result["elapsed_seconds"])
+        self.assertEqual(events["validated_completion"]["elapsed_seconds"], result["elapsed_seconds"])
+        self.assertGreater(timing["outcome_after_pod_terminal_seconds"], 0)
+        self.assertEqual(events["pod_terminal"]["pod_uid"], timing["execution"]["pod_uid"])
+
+    def test_arm_outcomes_use_first_receipts_and_keep_signed_poll_order(self):
+        registration = self.registered()
+        for baseline in ev.BASELINES:
+            with self.subTest(baseline=baseline):
+                clock, kube = ObservationClock(), FakeKube(registration)
+                api = FakeAPI(kube)
+                original_api, original_get = api.call, kube.get
+
+                def api_call(path, body=None, key=None):
+                    clock.advance()
+                    return original_api(path, body, key)
+
+                def get(resource, name=None, selector=None):
+                    clock.advance(.5)
+                    return original_get(resource, name, selector)
+
+                api.call, kube.get = api_call, get
+                result = {}
+                with patch.object(ev.time, "monotonic", side_effect=clock.monotonic), \
+                     patch.object(ev.time, "sleep", side_effect=clock.advance), patch.object(ev, "now", side_effect=clock.now):
+                    ev.trial(kube, registration, baseline, 0, result, lambda: None, api)
+                self.assertTrue(result["correct"], result)
+                events = result["timing"]["events"]
+                if baseline == "agent-sandbox":
+                    self.assertEqual(events["pod_terminal"]["elapsed_seconds"], events["outcome_visible_to_caller"]["elapsed_seconds"])
+                    self.assertEqual(result["timing"]["outcome_after_pod_terminal_seconds"], 0)
+                else:
+                    self.assertLess(result["timing"]["outcome_after_pod_terminal_seconds"], 0)
+                if baseline == "agentos":
+                    # The terminal submission response was already visible;
+                    # the later status GET must not reset that first receipt.
+                    self.assertEqual(events["outcome_visible_to_caller"]["elapsed_seconds"], 1)
+
+    def test_failed_pod_and_failed_outcome_are_not_validated_completion(self):
+        registration = self.registered()
+        for baseline in ev.BASELINES:
+            with self.subTest(baseline=baseline):
+                kube = FakeKube(registration)
+                api = FakeAPI(kube)
+                original_get, original_record, original_create = kube.get, api.record, kube.create
+
+                def create(manifest):
+                    value = original_create(manifest)
+                    if value["kind"] == "Job":
+                        value["status"]["conditions"] = [{"type": "Failed", "status": "True"}]
+                        kube.objects[("Job", value["metadata"]["name"])] = copy.deepcopy(value)
+                    return value
+
+                def get(resource, name=None, selector=None):
+                    value = original_get(resource, name, selector)
+                    if resource == "pods" and not name:
+                        for pod in value["items"]:
+                            pod["status"]["phase"] = "Failed"
+                    if resource in {"job", "jobs"} and value:
+                        value["status"]["conditions"] = [{"type": "Failed", "status": "True"}]
+                    return value
+
+                def record():
+                    return dict(original_record(), state="failed")
+
+                kube.get, api.record, kube.create = get, record, create
+                result = {}
+                ev.trial(kube, registration, baseline, 0, result, lambda: None, api)
+                self.assertFalse(result["correct"])
+                self.assertEqual(result["error"], "execution_failed")
+                events = result["timing"]["events"]
+                self.assertEqual(events["pod_terminal"]["status"], "observed")
+                self.assertEqual(events["pod_terminal"]["state"], "Failed")
+                self.assertEqual(events["outcome_visible_to_caller"]["status"], "observed")
+                self.assertEqual(events["validated_completion"]["status"], "missing")
+
+    def test_missing_pod_phase_does_not_fabricate_task_completion(self):
+        registration = self.registered()
+        kube = FakeKube(registration)
+        api = FakeAPI(kube)
+        original_get, original_api = kube.get, api.call
+        polls = 0
+
+        def api_call(path, body=None, key=None):
+            nonlocal polls
+            value = original_api(path, body, key)
+            if path == "/v1/runs":
+                value["state"] = "running"
+            elif path == "/v1/runs/" + api.run_id:
+                polls += 1
+                value["state"] = "succeeded" if polls >= 2 else "running"
+                if polls >= 2:
+                    kube.objects.pop(("Job", "agentos-" + api.run_id), None)
+            return value
+
+        def get(resource, name=None, selector=None):
+            value = original_get(resource, name, selector)
+            if resource == "pods" and not name:
+                for pod in value["items"]:
+                    pod["status"]["phase"] = "Running"
+            return value
+
+        api.call, kube.get = api_call, get
+        result = {}
+        ev.trial(kube, registration, "agentos", 0, result, lambda: None, api)
+        self.assertTrue(result["correct"])
+        event = result["timing"]["events"]["pod_terminal"]
+        self.assertEqual(event["status"], "missing")
+        self.assertIsNone(event["elapsed_seconds"])
+        self.assertIsNone(event["observed_at"])
+        self.assertEqual(result["timing"]["events"]["outcome_visible_to_caller"]["status"], "observed")
+        self.assertIsNone(result["timing"]["outcome_after_pod_terminal_seconds"])
+
+    def test_pod_replacement_and_changed_terminal_api_identity_cannot_merge_timings(self):
+        registration = self.registered()
+        kube = FakeKube(registration)
+        api = FakeAPI(kube)
+        original_api, original_get = api.call, kube.get
+        polls = 0
+
+        def api_call(path, body=None, key=None):
+            nonlocal polls
+            value = original_api(path, body, key)
+            if path == "/v1/runs":
+                value["state"] = "running"
+            elif path == "/v1/runs/" + api.run_id:
+                polls += 1
+                value["state"] = "succeeded" if polls > 1 else "running"
+            return value
+
+        def get(resource, name=None, selector=None):
+            value = original_get(resource, name, selector)
+            if resource == "pods" and not name:
+                for pod in value["items"]:
+                    pod["metadata"]["uid"] = "first-pod" if polls == 1 else "replacement-pod"
+                    pod["status"]["phase"] = "Running" if polls == 1 else "Succeeded"
+            return value
+
+        api.call, kube.get = api_call, get
+        result = {}
+        ev.trial(kube, registration, "agentos", 0, result, lambda: None, api)
+        self.assertFalse(result["correct"])
+        self.assertEqual(result["error"], "execution_pod_identity_changed")
+        self.assertEqual(result["timing"]["events"]["pod_terminal"]["status"], "missing")
+        self.assertEqual(len(result["descendants"]), 2)
+        def wrong_status(path, body=None, key=None):
+            value = original_api(path, body, key)
+            if path == "/v1/runs/" + api.run_id:
+                value["id"] = "b" * 32
+            return value
+        api.call = wrong_status
+        result = {}
+        ev.trial(kube, registration, "agentos", 1, result, lambda: None, api)
+        self.assertEqual(result["error"], "api_run_identity_changed")
+        self.assertEqual(result["cleanup"], "api_execution_context_unverified")
+
+    def test_conflicting_job_terminal_conditions_cannot_publish_an_outcome(self):
+        registration = self.registered()
+        kube = FakeKube(registration)
+        original_create = kube.create
+        def create(manifest):
+            value = original_create(manifest)
+            value["status"]["conditions"].append({"type": "Failed", "status": "True"})
+            kube.objects[("Job", value["metadata"]["name"])] = copy.deepcopy(value)
+            return value
+        kube.create = create
+        result = {}
+        ev.trial(kube, registration, "direct-job", 0, result, lambda: None)
+        self.assertFalse(result["correct"])
+        self.assertEqual(result["error"], "conflicting_job_outcome")
+        self.assertEqual(result["timing"]["events"]["outcome_visible_to_caller"]["status"], "missing")
+        self.assertEqual(result["cleanup"], "observed_objects_absent")
+
+    def test_wall_receipt_adjustment_cannot_change_monotonic_offsets(self):
+        clock = ObservationClock()
+        result = {"timing": ev.trial_timing("agentos")}
+        with patch.object(ev.time, "monotonic", side_effect=clock.monotonic), patch.object(ev, "now", side_effect=clock.now):
+            clock.advance(2)
+            ev.observe_trial_event(result, "pod_terminal", ev.timing_receipt(0), state="Succeeded")
+            clock.wall_adjustment = -100
+            clock.advance(3)
+            ev.observe_trial_event(result, "outcome_visible_to_caller", ev.timing_receipt(0), state="succeeded")
+        ev.finish_trial_timing(result)
+        self.assertEqual(result["timing"]["outcome_after_pod_terminal_seconds"], 3)
+        events = result["timing"]["events"]
+        self.assertLess(events["outcome_visible_to_caller"]["observed_at"], events["pod_terminal"]["observed_at"])
+        for invalid in (-1, float('nan'), float('inf')):
+            with patch.object(ev.time, "monotonic", return_value=invalid), \
+                 self.assertRaisesRegex(ev.Failure, "invalid_trial_observation_clock"):
+                ev.timing_receipt(0)
 
     def test_failed_output_is_preserved_without_raw_logs(self):
         registration = self.registered()
@@ -401,6 +700,9 @@ class EvaluationTest(unittest.TestCase):
         result = ev.read_json(result_path)
         self.assertTrue(result["completed"])
         self.assertTrue(all(not x["correct"] and x["error"] == "workload_output_mismatch" for x in result["trials"]))
+        self.assertTrue(all(x["timing"]["events"]["pod_terminal"]["state"] == "Succeeded"
+                            and x["timing"]["events"]["validated_completion"]["status"] == "missing"
+                            for x in result["trials"]))
         self.assertNotIn("PRIVATE_UNEXPECTED_CONTENT", result_path.read_text())
         before = result_path.read_bytes()
         with patch.object(ev, "Kubectl", return_value=kube), self.assertRaises(ev.Failure):

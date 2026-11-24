@@ -82,6 +82,8 @@ Compare the same deterministic commands, digest-pinned images, limits, nodes and
 
 Keep the node pool fixed for the initial comparison and separate cold images, cached images and provisioned warm capacity. Record admission-to-first-useful-result, p50/p95/p99 with sample counts, completion/error rate, throughput, CPU/RAM, idle resources and control-plane overhead. Capture timestamps at equivalent boundaries and include observer/polling overhead. The alpha's reconciliation interval is part of its measured overhead.
 
+Register the selected one-second and sixty-second elapsed profiles separately, before collecting either arm. Record terminal-Pod, native caller-outcome and validated-completion observations for every arm with missing evidence explicit. For these new format-2 pilot protocols the founder chose the caller-outcome boundary with `candidate p95 <= baseline p95 * 1.10 + 2 seconds`; preserve its written rationale and report both profiles without pooling. The original format-1 registrations retain their strict 1.10 ratio and old metric. These are synthetic duration probes, not measured customer/CPU workloads. Keep Job authority and stop reporting-delay tuning at this stage; sessions/reuse are a later lifecycle experiment. See [decision 0009](decisions/0009-comparison-boundaries-and-latency-budget.md).
+
 Do not call the collector's end-to-end differences isolated control-plane overhead: HTTP and kubectl arms use different observation paths. Time installation, upgrades and failure recovery with the operator journal, including privileges, customization and failed steps. Apply the registered decision gates before interpreting an advantage.
 
 This compares current execution paths; it does not test the alpha for a hibernation feature it lacks.

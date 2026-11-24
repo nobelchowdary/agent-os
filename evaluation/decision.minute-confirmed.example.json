@@ -1,0 +1,17 @@
+{
+  "format_version": 2,
+  "experiment_id": "eks-minute-confirmed-v2",
+  "baseline": "agent-sandbox",
+  "candidate": "agentos",
+  "minimum_trials": 30,
+  "minimum_correct_fraction": 1.0,
+  "max_p95_latency_ratio": 1.1,
+  "min_cost_improvement_fraction": 0.2,
+  "min_operator_improvement_fraction": 0.25,
+  "latency_policy": {
+    "boundary": "outcome_visible_to_caller",
+    "mode": "ratio_plus_absolute",
+    "absolute_allowance_seconds": 2.0,
+    "rationale": "Bounded allowance for a confirmed caller outcome. Short and minute nominal elapsed fixtures are registered separately; no retuning after data."
+  }
+}

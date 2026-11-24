@@ -10,6 +10,8 @@ Updated November 24 for the [staged reporting/deadline review](robustness/REPORT
 
 The same day's [timing follow-up](robustness/JOB_CONTROLLER_TIMING_2026-11-24.md) adds per-run observation boundaries, coverage and raw evidence from a 64-task diagnostic at `6389b17`. It changes no production Go behavior. The prewritten gate for an earlier-success path failed, so final Job outcome checks remain in place. The [EKS billing prerequisites](EVALUATION_RUNBOOK.md#billing-preparation-before-the-pilot) now distinguish activated Pod cost tags, verified identity-to-arm joins and complete cost accounting from declarations or missing billing rows.
 
+The full regression at `6389b17` is now verified as successful, with its source/run/artifact binding and limits in that report. [Decision 0009](decisions/0009-comparison-boundaries-and-latency-budget.md) prepares two separate future comparison profiles, nominal one-second tools and sixty-second tasks. New format-2 protocols select caller-visible outcome p95 with the predeclared allowance `baseline * 1.10 + 2 seconds`, retain all three observed timing boundaries and preserve format-1 behavior. These collector/report changes do not add runtime capabilities or establish a comparative benefit.
+
 This document can be shared with a researcher reviewing the public repository. It distinguishes inspected local code, documented upstream capabilities and results that still need measurement. The November 19 upstream feature comparison below is historical research, not a measured comparison against the reference projects.
 
 ## What the alpha actually does

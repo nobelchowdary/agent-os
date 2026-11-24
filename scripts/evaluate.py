@@ -161,7 +161,10 @@ def validate_protocol(protocol):
     fields = {"format_version", "experiment_id", "baseline", "candidate", "minimum_trials",
               "minimum_correct_fraction", "max_p95_latency_ratio", "min_cost_improvement_fraction",
               "min_operator_improvement_fraction"}
-    require(set(protocol) == fields and protocol["format_version"] == 1, "protocol_fields_or_version")
+    version = protocol.get("format_version")
+    require(type(version) is int and version in (1, 2)
+            and set(protocol) == fields | ({"latency_policy"} if version == 2 else set()),
+            "protocol_fields_or_version")
     require(protocol["baseline"] in BASELINES and protocol["candidate"] in BASELINES
             and protocol["baseline"] != protocol["candidate"], "protocol_baselines")
     require(type(protocol["minimum_trials"]) is int and 2 <= protocol["minimum_trials"] <= 200, "protocol_trial_bounds")
@@ -169,6 +172,22 @@ def validate_protocol(protocol):
                               ("min_cost_improvement_fraction", 0.001, 0.99), ("min_operator_improvement_fraction", 0.001, 0.99)):
         value = protocol[key]
         require(type(value) in (int, float) and math.isfinite(value) and lower <= value <= upper, "protocol_metric_bounds")
+    if version == 2:
+        policy = protocol["latency_policy"]
+        require(isinstance(policy, dict) and set(policy) == {
+            "boundary", "mode", "absolute_allowance_seconds", "rationale"}, "latency_policy_fields")
+        require(isinstance(policy["boundary"], str) and policy["boundary"] in {
+            "pod_terminal", "outcome_visible_to_caller", "validated_completion"}
+                and policy["mode"] == "ratio_plus_absolute", "latency_policy_contract")
+        allowance = policy["absolute_allowance_seconds"]
+        require(type(allowance) in (int, float) and math.isfinite(allowance) and 0 <= allowance <= 3600,
+                "latency_policy_allowance")
+        rationale = policy["rationale"]
+        try:
+            valid_rationale = isinstance(rationale, str) and rationale.strip() and len(rationale.encode()) <= 1024
+        except UnicodeError:
+            valid_rationale = False
+        require(valid_rationale, "latency_policy_rationale")
 
 
 def deadline_scope(workload, baseline="agentos"):
@@ -601,9 +620,87 @@ def cancel_api(api, run_id, registration):
     raise Failure("api_cancellation_not_observed")
 
 
+def timing_contract(baseline):
+    """Describe the client's actual arm-specific outcome, not equivalent guarantees."""
+    outcomes = {
+        "agentos": ("agentos_run_api", "first verified terminal run response; Job-authoritative Agent OS outcome"),
+        "direct-job": ("kubernetes_job_condition", "first owned Job Complete/Failed condition received by the collector"),
+        "agent-sandbox": ("sandbox_pod_phase", "collector-defined outcome from an owned Sandbox Pod terminal phase"),
+    }
+    source, meaning = outcomes[baseline]
+    return {"format_version": 1, "clock_basis": "harness_monotonic_offsets",
+            "observation": "poll receipts include polling, transport and observer overhead; not API-server write times",
+            "wall_clock": "harness UTC receipt timestamps; wall-clock synchronization unqualified",
+            "events": {
+                "pod_terminal": {"source": "kubernetes_pod_phase",
+                    "boundary": "first verified workload Pod Succeeded/Failed phase received by the collector"},
+                "outcome_visible_to_caller": {"source": source, "boundary": meaning},
+                "validated_completion": {"source": "collector_validated_output",
+                    "boundary": "legacy elapsed_seconds endpoint: observed arm success and exact validated stdout, before cleanup"}}}
+
+
+def trial_timing(baseline):
+    contract = timing_contract(baseline)
+    reasons = {"pod_terminal": "pod_terminal_not_observed", "outcome_visible_to_caller": "caller_outcome_not_observed",
+               "validated_completion": "validated_completion_not_reached"}
+    return {"format_version": 1, "clock_basis": contract["clock_basis"], "execution": None,
+            "events": {name: {"status": "missing", "observed_at": None, "elapsed_seconds": None,
+                               "source": event["source"], "reason": reasons[name]}
+                       for name, event in contract["events"].items()},
+            "outcome_after_pod_terminal_seconds": None,
+            "ordering": "unobserved; signed receipt intervals can reflect polling order rather than execution order"}
+
+
+def timing_receipt(start):
+    elapsed = time.monotonic() - start
+    require(math.isfinite(elapsed) and elapsed >= 0, "invalid_trial_observation_clock")
+    return {"observed_at": now(), "elapsed_seconds": elapsed}
+
+
+def observe_trial_event(result, name, receipt, **facts):
+    event = result["timing"]["events"][name]
+    if event["status"] == "observed":
+        # Outcomes are immutable; repeated polls cannot silently combine two
+        # different execution states or object identities into one timestamp.
+        require(all(event.get(key) == value for key, value in facts.items()), "timing_event_changed")
+        return
+    event.update(receipt, status="observed", **facts)
+    event.pop("reason", None)
+
+
+def observe_trial_pod(result, pod, parent, receipt):
+    """Only call after the Pod's owner, execution profile and metadata checks."""
+    metadata = pod.get("metadata", {})
+    require(owned_by(pod, parent), "descendant_owner_changed")
+    binding = {"pod_uid": metadata.get("uid"), "pod_name": metadata.get("name"),
+               "parent_uid": parent.get("metadata", {}).get("uid")}
+    require(all(isinstance(value, str) and value for value in binding.values()), "pod_timing_identity_missing")
+    existing = result["timing"]["execution"]
+    require(existing is None or existing == binding, "execution_pod_identity_changed")
+    result["timing"]["execution"] = binding
+    phase = pod.get("status", {}).get("phase")
+    if phase in {"Succeeded", "Failed"}:
+        observe_trial_event(result, "pod_terminal", receipt, state=phase, **binding)
+
+
+def finish_trial_timing(result):
+    events = result["timing"]["events"]
+    pod, outcome = events["pod_terminal"], events["outcome_visible_to_caller"]
+    if pod["status"] == outcome["status"] == "observed":
+        result["timing"]["outcome_after_pod_terminal_seconds"] = outcome["elapsed_seconds"] - pod["elapsed_seconds"]
+
+
+def job_terminal_state(job):
+    outcomes = {condition.get("type") for condition in job.get("status", {}).get("conditions", [])
+                if condition.get("status") == "True" and condition.get("type") in {"Complete", "Failed"}}
+    require(len(outcomes) <= 1, "conflicting_job_outcome")
+    return next(iter(outcomes)) if outcomes else None
+
+
 def trial(kube, registration, baseline, index, result, save, api=None):
     start = time.monotonic()
-    result.update({"correct": False, "elapsed_seconds": 0.0, "status": "running", "resources": [], "descendants": []})
+    result.update({"correct": False, "elapsed_seconds": 0.0, "status": "running", "resources": [], "descendants": [],
+                   "timing": trial_timing(baseline)})
     name = "ae-" + registration["registration_id"][:16] + "-" + {"direct-job": "d", "agentos": "a", "agent-sandbox": "s"}[baseline] + "-" + str(index)
     parent = None
     save()
@@ -616,6 +713,7 @@ def trial(kube, registration, baseline, index, result, save, api=None):
             for _ in range(2):
                 try:
                     record = api.call("/v1/runs", request_body(registration), key=name)
+                    record_receipt = timing_receipt(start)
                     break
                 except Failure as error:
                     if str(error) not in {"api_transport_outcome_unknown", "api_http_500", "api_http_502", "api_http_503",
@@ -629,6 +727,9 @@ def trial(kube, registration, baseline, index, result, save, api=None):
             name = "agentos-" + run_id
             save()
             assert_record_spec(record, registration)
+            if record.get("state") in TERMINAL:
+                observe_trial_event(result, "outcome_visible_to_caller", record_receipt,
+                                    state=record["state"], run_id=run_id)
         else:
             if baseline == "direct-job":
                 manifest = job_manifest(registration, name, index)
@@ -640,27 +741,48 @@ def trial(kube, registration, baseline, index, result, save, api=None):
             result["submission_uncertain"] = True
             save()  # Persist the exact intended identity before the API call.
             parent = kube.create(manifest)
+            parent_receipt = timing_receipt(start)
             check_owned(parent, registration, result["resources"][0])
             result["resources"][0] = reference(parent)
             result["submission_uncertain"] = False
             save()
+            if baseline == "direct-job":
+                assert_job_profile(parent, registration)
+                state = job_terminal_state(parent)
+                if state:
+                    observe_trial_event(result, "outcome_visible_to_caller", parent_receipt,
+                                        state=state, resource_uid=parent["metadata"]["uid"])
         logs = ""
         while time.monotonic() - start < registration["trial_timeout_seconds"]:
             terminal = False
             successful = False
             if baseline == "agentos":
                 record = api.call("/v1/runs/" + result["run_id"])
+                receipt = timing_receipt(start)
+                require(record.get("id") == result["run_id"], "api_run_identity_changed")
                 assert_record_spec(record, registration)
                 terminal = record.get("state") in TERMINAL
                 successful = record.get("state") == "succeeded"
+                if terminal:
+                    observe_trial_event(result, "outcome_visible_to_caller", receipt,
+                                        state=record["state"], run_id=result["run_id"])
                 if parent is None:
                     parent = kube.get("job", name)
                     if parent is not None:
                         result["resources"] = [tag_api_job(kube, registration, parent)]
                         save()
                 if parent is not None:
-                    check_owned(kube.get("job", name) or {}, registration, result["resources"][0])
+                    current = kube.get("job", name)
+                    if current is not None:
+                        check_owned(current, registration, result["resources"][0])
+                    else:
+                        # The API may already have captured its result and
+                        # deleted a previously verified execution. Absence is
+                        # not Pod-terminal evidence, but must not erase the
+                        # caller's authoritative terminal API observation.
+                        require(terminal, "execution_disappeared")
                     pods = kube.get("pods", selector="agentos.dev/run-id=" + result["run_id"]) or {"items": []}
+                    pod_receipt = timing_receipt(start)
                     candidates = [p for p in pods.get("items", []) if owned_by(p, parent)]
                     require(len(candidates) <= 1, "multiple_execution_pods")
                     for pod in candidates:
@@ -668,6 +790,7 @@ def trial(kube, registration, baseline, index, result, save, api=None):
                         assert_pod_profile(pod.get("spec", {}), expected["spec"])
                         assert_pod_metadata(pod.get("metadata", {}), expected["metadata"])
                         remember_descendant(result, pod, parent)
+                        observe_trial_pod(result, pod, parent, pod_receipt)
                         save()
                 try:
                     logs = api.call("/v1/runs/" + result["run_id"] + "/logs").get("logs", "")
@@ -678,12 +801,15 @@ def trial(kube, registration, baseline, index, result, save, api=None):
             else:
                 if baseline == "direct-job":
                     current = kube.get("job", name)
+                    receipt = timing_receipt(start)
                     require(current is not None, "execution_disappeared")
                     check_owned(current, registration, result["resources"][0])
                     assert_job_profile(current, registration)
-                    conditions = current.get("status", {}).get("conditions", [])
-                    terminal = any(x.get("status") == "True" and x.get("type") in {"Complete", "Failed"} for x in conditions)
-                    successful = any(x.get("status") == "True" and x.get("type") == "Complete" for x in conditions)
+                    state = job_terminal_state(current)
+                    terminal, successful = state is not None, state == "Complete"
+                    if terminal:
+                        observe_trial_event(result, "outcome_visible_to_caller", receipt,
+                                            state=state, resource_uid=current["metadata"]["uid"])
                     pod_parent = current
                 else:
                     claim = kube.get("sandboxclaims.extensions.agents.x-k8s.io", name)
@@ -698,6 +824,7 @@ def trial(kube, registration, baseline, index, result, save, api=None):
                         remember_descendant(result, pod_parent, parent)
                         save()
                 pods = kube.get("pods", selector=LABEL + "=" + registration["registration_id"]) or {"items": []}
+                pod_receipt = timing_receipt(start)
                 candidates = [x for x in pods.get("items", []) if pod_parent and owned_by(x, pod_parent)]
                 require(len(candidates) <= 1, "multiple_execution_pods")
                 if candidates:
@@ -706,10 +833,15 @@ def trial(kube, registration, baseline, index, result, save, api=None):
                     assert_pod_profile(pod.get("spec", {}), expected["spec"])
                     assert_pod_metadata(pod.get("metadata", {}), expected["metadata"])
                     remember_descendant(result, pod, pod_parent)
+                    observe_trial_pod(result, pod, pod_parent, pod_receipt)
                     save()
                     if baseline == "agent-sandbox":
                         terminal = pod.get("status", {}).get("phase") in {"Succeeded", "Failed"}
                         successful = pod.get("status", {}).get("phase") == "Succeeded"
+                        if terminal:
+                            observe_trial_event(result, "outcome_visible_to_caller", pod_receipt,
+                                                state=pod["status"]["phase"], pod_uid=pod["metadata"]["uid"],
+                                                parent_uid=pod_parent["metadata"]["uid"])
                     try:
                         logs = kube.logs(pod["metadata"]["name"])
                     except Failure as error:
@@ -738,6 +870,10 @@ def trial(kube, registration, baseline, index, result, save, api=None):
         result["error"] = "unexpected_observer_failure"
     finally:
         result["elapsed_seconds"] = time.monotonic() - start
+        if result["correct"]:
+            observe_trial_event(result, "validated_completion", {
+                "observed_at": now(), "elapsed_seconds": result["elapsed_seconds"]}, state="succeeded")
+        finish_trial_timing(result)
         result["status"] = "finished"
         save()
         try:
@@ -746,7 +882,9 @@ def trial(kube, registration, baseline, index, result, save, api=None):
             for ref in reversed(result["resources"]):
                 delete_owned(kube, registration, ref)
             descendants_absent(kube, registration, result["descendants"])
-            result["cleanup"] = "submission_outcome_unknown" if result.get("submission_uncertain") else "observed_objects_absent"
+            result["cleanup"] = ("submission_outcome_unknown" if result.get("submission_uncertain") else
+                                 "api_execution_context_unverified" if result.get("run_id") and parent is None else
+                                 "observed_objects_absent")
         except Failure as error:
             result["cleanup"] = str(error)
         save()
@@ -797,6 +935,7 @@ def load_registration(args):
     require(registration.get("format_version") == 1 and registration.get("context") == args.context, "registered_context_required")
     require(digest(registration["protocol"]) == registration["protocol_sha256"]
             and digest(registration["workload"]) == registration["workload_sha256"], "registration_digest_mismatch")
+    validate_protocol(registration["protocol"])
     validate_workload(registration["workload"])
     return directory, registration
 
@@ -819,8 +958,11 @@ def collect(args):
               "billing_complete": False, "node_reduction_demonstrated": False,
               "cache_state": registration["cache_state"], "poll_seconds": registration["poll_seconds"],
               "deadline_contract": deadline_contract(registration["workload"], args.baseline),
+              "timing_contract": timing_contract(args.baseline),
               "timing_boundary": "client submission start to observed terminal success and validated stdout",
               "readiness_boundary": "client submission start to first observed workload readiness log line"}
+    if registration["protocol"]["format_version"] == 2:
+        result["latency_policy"] = copy.deepcopy(registration["protocol"]["latency_policy"])
     if args.baseline == "agent-sandbox":
         result.update({"baseline_provider": "aws-blueprint-compatible-upstream", "pool_replicas": 0,
                        "upstream_api_version": EXT, "upstream_contract_ref": "kubernetes-sigs/agent-sandbox@v1.0.1",

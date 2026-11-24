@@ -2,6 +2,7 @@
 """Evaluate preregistered experiment gates; never infer isolation from YAML."""
 
 import argparse
+import datetime as dt
 import importlib.util
 import json
 import math
@@ -18,6 +19,7 @@ _COLLECTOR_SPEC.loader.exec_module(collector)
 
 OPERATOR_BINDINGS = ("experiment_id", "baseline", "protocol_sha256", "registration_sha256",
                      "workload_sha256", "environment_sha256")
+TIMING_BOUNDARIES = ("pod_terminal", "outcome_visible_to_caller", "validated_completion")
 
 
 def load_json(path):
@@ -37,11 +39,24 @@ def number(value, name, minimum=0, maximum=None):
 
 
 def validate_protocol(protocol):
+    if not isinstance(protocol, dict):
+        raise ValueError("unsupported decision protocol object")
     fields = {"format_version", "experiment_id", "baseline", "candidate", "minimum_trials",
               "minimum_correct_fraction", "max_p95_latency_ratio", "min_cost_improvement_fraction",
               "min_operator_improvement_fraction"}
-    if set(protocol) != fields or protocol["format_version"] != 1:
+    version = protocol.get("format_version")
+    if type(version) is not int or version not in (1, 2) or set(protocol) != fields | ({"latency_policy"} if version == 2 else set()):
         raise ValueError("unsupported decision protocol fields or version")
+    if version == 2:
+        policy = protocol["latency_policy"]
+        if not isinstance(policy, dict) or set(policy) != {"boundary", "mode", "absolute_allowance_seconds", "rationale"}:
+            raise ValueError("unsupported latency policy fields")
+        if policy["boundary"] not in TIMING_BOUNDARIES or policy["mode"] != "ratio_plus_absolute":
+            raise ValueError("unsupported latency policy boundary or mode")
+        number(policy["absolute_allowance_seconds"], "absolute_allowance_seconds", 0, 3600)
+        rationale = policy["rationale"]
+        if not isinstance(rationale, str) or not rationale.strip() or len(rationale.encode()) > 1024:
+            raise ValueError("latency policy requires a bounded rationale")
     for key in ("experiment_id", "baseline", "candidate"):
         if not isinstance(protocol[key], str) or not protocol[key] or len(protocol[key]) > 128:
             raise ValueError(f"invalid {key}")
@@ -104,6 +119,106 @@ def load_registration(path):
     return registration
 
 
+def validate_timing_identity(trial, timing, event, source, contract):
+    """Cross-check recorded identities; these consistency checks are not attestation."""
+    binding = timing.get("execution")
+    if binding is not None and (not isinstance(binding, dict) or any(
+            not isinstance(binding.get(key), str) or not binding[key]
+            for key in ("pod_uid", "pod_name", "parent_uid"))):
+        raise ValueError("invalid trial timing execution identity")
+    references = []
+    for key in ("resources", "descendants"):
+        values = trial.get(key, [])
+        if not isinstance(values, list) or any(not isinstance(value, dict) for value in values):
+            raise ValueError("invalid trial resource identities")
+        references.extend(values)
+    pods = [ref for ref in references if ref.get("kind") == "Pod" and ref.get("uid")]
+    parent_kind = ("Sandbox" if contract["events"]["outcome_visible_to_caller"]["source"] == "sandbox_pod_phase"
+                   else "Job")
+    parents = [ref["uid"] for ref in references if ref.get("kind") == parent_kind and ref.get("uid")]
+
+    def check_pod(facts):
+        if binding is not None and any(facts.get(key) != binding[key]
+                for key in ("pod_uid", "parent_uid") if key in facts):
+            raise ValueError("trial timing Pod identity differs from execution")
+        if binding is not None and "pod_name" in facts and facts["pod_name"] != binding["pod_name"]:
+            raise ValueError("trial timing Pod name differs from execution")
+        if parents and facts.get("parent_uid") not in parents:
+            raise ValueError("trial timing parent differs from recorded resources")
+        if pods:
+            matched = [ref for ref in pods if ref["uid"] == facts.get("pod_uid")]
+            if not matched or any((ref.get("parent_uid") and ref["parent_uid"] != facts.get("parent_uid"))
+                    or ("pod_name" in facts and ref.get("name") != facts["pod_name"]) for ref in matched):
+                raise ValueError("trial timing Pod differs from recorded descendants")
+
+    if binding is not None:
+        check_pod(binding)
+    identity_fields = {
+        "agentos_run_api": ("run_id",),
+        "kubernetes_job_condition": ("resource_uid",),
+        "kubernetes_pod_phase": ("pod_uid", "pod_name", "parent_uid"),
+        "sandbox_pod_phase": ("pod_uid", "parent_uid"),
+        "collector_validated_output": (),
+    }[source]
+    if any(not isinstance(event.get(key), str) or not event[key] for key in identity_fields):
+        raise ValueError("observed trial timing requires its native identity")
+    if source == "agentos_run_api" and "run_id" in trial and event["run_id"] != trial["run_id"]:
+        raise ValueError("trial timing API run identity differs from recorded run")
+    if source == "kubernetes_job_condition":
+        if parents and event["resource_uid"] not in parents:
+            raise ValueError("trial timing Job identity differs from recorded resource")
+        if binding is not None and event["resource_uid"] != binding["parent_uid"]:
+            raise ValueError("trial timing Job identity differs from execution parent")
+    if source in ("kubernetes_pod_phase", "sandbox_pod_phase"):
+        check_pod(event)
+
+
+def timing_seconds(trial, boundary, contract):
+    """Read one declared observation; absence is missing evidence, never a zero."""
+    timing = trial.get("timing")
+    if timing is None:
+        return None
+    if (not isinstance(timing, dict) or type(timing.get("format_version")) is not int or timing.get("format_version") != 1
+            or timing.get("clock_basis") != "harness_monotonic_offsets"):
+        raise ValueError("unsupported trial timing contract")
+    events = timing.get("events")
+    if not isinstance(events, dict) or not set(events) <= set(TIMING_BOUNDARIES):
+        raise ValueError("unsupported trial timing events")
+    event = events.get(boundary)
+    if event is None:
+        return None
+    if not isinstance(event, dict):
+        raise ValueError("invalid trial timing event")
+    if event.get("status") == "missing":
+        if event.get("elapsed_seconds") is not None or event.get("observed_at") is not None:
+            raise ValueError("missing trial timing event contains an observation")
+        return None
+    if event.get("status") != "observed":
+        raise ValueError("unsupported trial timing event status")
+    elapsed = number(event.get("elapsed_seconds"), "timing elapsed_seconds")
+    if elapsed > trial["elapsed_seconds"]:
+        raise ValueError("trial timing observation exceeds validated trial duration")
+    expected_source = contract["events"][boundary]["source"]
+    if event.get("source") != expected_source:
+        raise ValueError("trial timing source differs from its arm contract")
+    successful_state = {"kubernetes_pod_phase": "Succeeded", "sandbox_pod_phase": "Succeeded",
+                        "agentos_run_api": "succeeded", "kubernetes_job_condition": "Complete",
+                        "collector_validated_output": "succeeded"}[expected_source]
+    if event.get("state") != successful_state:
+        raise ValueError("correct trial timing contains a contradictory native outcome")
+    if boundary == "validated_completion" and elapsed != trial["elapsed_seconds"]:
+        raise ValueError("validated completion differs from legacy trial duration")
+    validate_timing_identity(trial, timing, event, expected_source, contract)
+    observed = event.get("observed_at")
+    try:
+        stamp = dt.datetime.fromisoformat(observed.replace("Z", "+00:00")) if isinstance(observed, str) else None
+        if stamp is None or stamp.tzinfo is None or stamp.year < 2:
+            raise ValueError("missing or naive observation timestamp")
+    except (ValueError, OverflowError):
+        raise ValueError("trial timing requires a valid receipt timestamp") from None
+    return elapsed
+
+
 def summarize(report, protocol, digest, label):
     if report.get("format_version") != 1 or report.get("experiment_id") != protocol["experiment_id"]:
         raise ValueError("report experiment/version does not match protocol")
@@ -122,7 +237,20 @@ def summarize(report, protocol, digest, label):
     indexes = [trial.get("index") if isinstance(trial, dict) else None for trial in trials]
     if any(type(index) is not int for index in indexes) or sorted(indexes) != list(range(requested)):
         raise ValueError("trial indexes must be unique and contiguous from zero")
+    explicit_timing = protocol["format_version"] == 2
+    selected = protocol["latency_policy"]["boundary"] if explicit_timing else None
+    if explicit_timing:
+        contract = collector.timing_contract(label)
+        if (type(report.get("format_version")) is not int
+                or not isinstance(report.get("timing_contract"), dict)
+                or collector.digest(report["timing_contract"]) != collector.digest(contract)):
+            raise ValueError("report timing contract differs from its arm")
+        if (not isinstance(report.get("latency_policy"), dict)
+                or collector.digest(report["latency_policy"]) != collector.digest(protocol["latency_policy"])):
+            raise ValueError("report latency policy differs from its registration")
     times, successes = [], 0
+    boundary_times = {boundary: [] for boundary in TIMING_BOUNDARIES}
+    missing = {boundary: 0 for boundary in TIMING_BOUNDARIES}
     for trial in trials:
         if not isinstance(trial, dict) or type(trial.get("correct")) is not bool:
             raise ValueError("each trial needs an explicit correctness outcome")
@@ -132,16 +260,37 @@ def summarize(report, protocol, digest, label):
         if trial["correct"]:
             if elapsed <= 0:
                 raise ValueError("successful trial elapsed_seconds must be positive")
-            times.append(elapsed)
+            if explicit_timing:
+                for boundary in TIMING_BOUNDARIES:
+                    measured = timing_seconds(trial, boundary, contract)
+                    if measured is None:
+                        missing[boundary] += 1
+                    else:
+                        if boundary == selected and measured <= 0:
+                            raise ValueError("successful selected timing must be positive")
+                        boundary_times[boundary].append(measured)
+            else:
+                times.append(elapsed)
     qualification = report.get("qualification", {})
     status = qualification.get("status", "not_verified")
     if status not in ("passed", "failed", "not_verified"):
         raise ValueError("unsupported qualification status")
     if status in ("passed", "failed") and not qualification.get("evidence_ref"):
         raise ValueError("qualification result needs an evidence reference")
+    if explicit_timing:
+        # Never compute a gate on a favorable subset of successful executions.
+        times = boundary_times[selected] if missing[selected] == 0 else []
     p95 = sorted(times)[math.ceil(0.95 * len(times)) - 1] if times else None
-    return {"trials": len(trials), "correct": successes, "correct_fraction": successes / len(trials),
-            "successful_p95_seconds": p95, "qualification": status}
+    result = {"trials": len(trials), "correct": successes, "correct_fraction": successes / len(trials),
+              "successful_p95_seconds": p95, "qualification": status}
+    if explicit_timing:
+        result.update(latency_boundary=selected, missing_latency_samples=missing[selected],
+                      timing_boundaries={name: {
+                          "observed_successful_trials": len(values), "missing_successful_trials": missing[name],
+                          "successful_p95_seconds": sorted(values)[math.ceil(.95 * len(values)) - 1]
+                              if values and missing[name] == 0 else None,
+                      } for name, values in boundary_times.items()})
+    return result
 
 
 def apply_supplemental(metadata, baseline, candidate):
@@ -192,10 +341,19 @@ def decide(protocol, digest, baseline, candidate, registration):
     c = summarize(candidate, protocol, digest, protocol["candidate"])
     if any(baseline[k] != candidate[k] for k in ("registration_sha256", "workload_sha256", "environment_sha256", "requested_trials")):
         raise ValueError("different registrations/workload/environment: publish exploratory results separately")
-    result = {"format_version": 1, "experiment_id": protocol["experiment_id"],
+    result = {"format_version": 2 if protocol["format_version"] == 2 else 1, "experiment_id": protocol["experiment_id"],
               "protocol_sha256": digest, "baseline": b, "candidate": c,
               **{key: baseline[key] for key in ("registration_sha256", "workload_sha256", "environment_sha256", "requested_trials")},
               "decision": "insufficient_evidence", "reasons": [], "routes": {}}
+    explicit_timing = protocol["format_version"] == 2
+    if explicit_timing:
+        policy = dict(protocol["latency_policy"])
+        result["latency_gate"] = {"policy": policy,
+            "max_p95_latency_ratio": protocol["max_p95_latency_ratio"],
+            "formula": "candidate_p95 <= baseline_p95 * max_p95_latency_ratio + absolute_allowance_seconds",
+            "baseline_p95_seconds": b["successful_p95_seconds"],
+            "candidate_p95_seconds": c["successful_p95_seconds"],
+            "allowed_candidate_p95_seconds": None, "passes": None}
     reasons = result["reasons"]
     if "failed" in (b["qualification"], c["qualification"]):
         result["decision"] = "stop_experiment"
@@ -216,12 +374,25 @@ def decide(protocol, digest, baseline, candidate, registration):
         result["decision"] = "change_direction"
         reasons.append("The candidate fails the correctness gate; optimize only after preserving useful work.")
         return result
+    if explicit_timing and any(summary["missing_latency_samples"] for summary in (b, c)):
+        reasons.append("The selected preregistered latency boundary is missing on a correct trial; complete coverage is required.")
+        return result
     if not b["successful_p95_seconds"] or c["successful_p95_seconds"] is None:
         reasons.append("Positive successful-task timing is required in both arms.")
         return result
     ratio = c["successful_p95_seconds"] / b["successful_p95_seconds"]
+    if explicit_timing:
+        number(ratio, "successful_p95_latency_ratio")
     result["successful_p95_latency_ratio"] = ratio
-    if ratio > protocol["max_p95_latency_ratio"]:
+    if explicit_timing:
+        allowance = protocol["latency_policy"]["absolute_allowance_seconds"]
+        limit = b["successful_p95_seconds"] * protocol["max_p95_latency_ratio"] + allowance
+        number(limit, "allowed_candidate_p95_seconds")
+        passes = c["successful_p95_seconds"] <= limit
+        result["latency_gate"].update(allowed_candidate_p95_seconds=limit, passes=passes)
+    else:
+        passes = ratio <= protocol["max_p95_latency_ratio"]
+    if not passes:
         result["decision"] = "change_direction"
         reasons.append("The candidate exceeds the preregistered latency regression allowance.")
         return result
