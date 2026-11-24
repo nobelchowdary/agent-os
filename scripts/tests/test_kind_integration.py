@@ -1,5 +1,6 @@
 """Dry-run/failure-boundary checks; these do not execute a cluster campaign."""
 import importlib.util
+import copy
 import io
 from pathlib import Path
 import tempfile
@@ -24,7 +25,221 @@ bootstrap = module('kind_cluster')
 campaign = module('kind_integration')
 
 
+def timing_watch(kind):
+    watch = campaign.ObjectWatch.__new__(campaign.ObjectWatch)
+    watch.kind, watch.lock = kind, threading.Lock()
+    watch.seen, watch.errors, watch.pod_times, watch.job_times = {}, [], {}, {}
+    watch.running, watch.running_history = set(), []
+    return watch
+
+
+def timing_objects(run_id='a'):
+    metadata = {'uid': 'job-' + run_id, 'name': 'agentos-' + run_id,
+                'labels': {campaign.RUN_LABEL: run_id}}
+    job = {'metadata': copy.deepcopy(metadata), 'status': {}}
+    metadata['uid'] = 'pod-' + run_id
+    metadata['ownerReferences'] = [{'apiVersion': 'batch/v1', 'kind': 'Job', 'name': 'agentos-' + run_id,
+                                    'uid': 'job-' + run_id, 'controller': True}]
+    pod = {'metadata': metadata, 'status': {'phase': 'Succeeded', 'containerStatuses': [
+        {'name': 'agent', 'state': {'terminated': {'startedAt': '2026-01-01T00:00:00Z',
+                                                  'finishedAt': '2026-01-01T00:00:10Z'}}}]}}
+    return job, pod
+
+
 class KindSafetyTests(unittest.TestCase):
+    def test_watch_retains_first_terminal_and_success_receipts_separately_from_source_times(self):
+        job, pod = timing_objects()
+        pods, jobs = timing_watch('pods'), timing_watch('jobs')
+        # A terminated container does not imply a terminal Pod phase yet.
+        early = copy.deepcopy(pod)
+        early['status']['phase'] = 'Running'
+        pods.record_object('ADDED', early, '2026-01-01T00:00:10.5Z', 'watch_receipt')
+        self.assertNotIn('pod_terminal_observed_at', pods.pod_times['a'])
+        pods.record_object('MODIFIED', pod, '2026-01-01T00:00:11Z', 'watch_receipt')
+        pods.record_object('DELETED', pod, '2026-01-01T00:00:20Z', 'watch_receipt')
+        jobs.record_object('ADDED', job, '2026-01-01T00:00:01Z', 'watch_receipt')
+        job['status']['conditions'] = [{'type': 'SuccessCriteriaMet', 'status': 'False'}]
+        jobs.record_object('MODIFIED', job, '2026-01-01T00:00:09Z', 'watch_receipt')
+        self.assertNotIn('job_success_criteria_observed_at', jobs.job_times['a'])
+        job['status']['conditions'] = [{'type': 'SuccessCriteriaMet', 'status': 'True',
+                                       'lastTransitionTime': '2026-01-01T00:00:11.5Z'}]
+        jobs.record_object('MODIFIED', job, '2026-01-01T00:00:12Z', 'watch_receipt')
+        job['status']['completionTime'] = '2026-01-01T00:00:13Z'
+        job['status']['conditions'].append({'type': 'Complete', 'status': 'True',
+                                           'lastTransitionTime': '2026-01-01T00:00:13.5Z'})
+        jobs.record_object('MODIFIED', job, '2026-01-01T00:00:14Z', 'watch_receipt')
+        jobs.record_object('DELETED', job, '2026-01-01T00:00:20Z', 'watch_receipt')
+        self.assertEqual(pods.pod_times['a']['pod_terminal_observed_at'], '2026-01-01T00:00:11Z')
+        self.assertEqual(pods.pod_times['a']['pod_job_uid'], 'job-a')
+        times = jobs.load_observations({'a'})[0]['a']
+        self.assertEqual(times['job_success_criteria_observed_at'], '2026-01-01T00:00:12Z')
+        self.assertEqual(times['job_success_criteria_condition_at'], '2026-01-01T00:00:11.5Z')
+        self.assertEqual(times['job_completion_at'], '2026-01-01T00:00:13Z')
+        self.assertEqual(times['job_terminal_condition_at'], '2026-01-01T00:00:13.5Z')
+        self.assertEqual(times['job_terminal_observed_at'], '2026-01-01T00:00:14Z')
+        times['job_completion_at'] = 'caller-mutation'
+        self.assertEqual(jobs.job_times['a']['job_completion_at'], '2026-01-01T00:00:13Z')
+
+    def test_watch_initial_terminal_snapshot_is_labelled_as_snapshot_not_transition(self):
+        from unittest.mock import Mock
+        job, pod = timing_objects()
+        job['status'] = {'completionTime': '2026-01-01T00:00:13Z',
+                         'conditions': [{'type': 'Complete', 'status': 'True'}]}
+        for kind, value, field in [('pods', pod, 'pod_terminal'), ('jobs', job, 'job_terminal')]:
+            with self.subTest(kind=kind):
+                cluster = Mock(k=['kubectl'])
+                cluster.obj.return_value = {'metadata': {'resourceVersion': '123'}, 'items': [value]}
+                with patch.object(campaign.subprocess, 'Popen'), patch.object(campaign.threading, 'Thread'), \
+                     patch.object(campaign, 'observed_timestamp', return_value='2026-01-01T00:00:20Z'):
+                    watch = campaign.ObjectWatch(cluster, kind)
+                sample = watch.load_observations({'a'})[0]['a']
+                self.assertEqual(sample[field + '_observed_at'], '2026-01-01T00:00:20Z')
+                self.assertEqual(sample[field + '_observation_source'], 'list_snapshot')
+                self.assertEqual(watch.seen['a'], {value['metadata']['uid']})
+
+    def test_load_timing_breakdown_retains_boundaries_and_paired_arithmetic(self):
+        pod = {'pod_uid': 'pod-a', 'pod_job_uid': 'job-a', 'started_at': '2026-01-01T00:00:00Z',
+               'finished_at': '2026-01-01T00:00:10Z', 'pod_terminal_observed_at': '2026-01-01T00:00:11Z',
+               'pod_terminal_phase': 'Succeeded', 'pod_terminal_observation_source': 'watch_receipt'}
+        job = {'job_uid': 'job-a', 'job_completion_at': '2026-01-01T01:00:13+01:00',
+               'job_terminal_condition_at': '2026-01-01T00:00:13.5Z',
+               'job_terminal_observed_at': '2026-01-01T00:00:14Z', 'job_terminal_condition': 'Complete',
+               'job_success_criteria_observed_at': '2026-01-01T00:00:12Z',
+               'job_success_criteria_condition_at': '2026-01-01T00:00:11.5Z'}
+        records = [{'id': 'a', 'events': [{'state': 'succeeded', 'at': '2026-01-01T00:00:15Z'}]}]
+        result = campaign.load_timing_breakdown({'a': pod}, {'a': job}, records, {'a': '2026-01-01T00:00:16Z'})
+        self.assertEqual(result['identity_counts'], {'matched': 1, 'unverified': 0, 'conflicting': 0})
+        self.assertEqual(result['complete_three_stage_samples'], 1)
+        expected = {'container_exit_to_observed_pod_terminal': 1, 'observed_pod_terminal_to_job_completion': 2,
+            'job_completion_to_persisted_terminal': 2, 'container_exit_to_job_completion': 3,
+            'observed_pod_terminal_to_observed_job_terminal': 3, 'observed_job_terminal_to_observed_api_terminal': 2,
+            'job_completion_to_observed_job_terminal': 1, 'observed_pod_terminal_to_observed_success_criteria': 1,
+            'observed_success_criteria_to_observed_job_terminal': 2,
+            'success_criteria_condition_to_job_completion': 1.5, 'success_criteria_condition_to_persisted_terminal': 3.5}
+        self.assertEqual(result['samples'][0]['intervals_seconds'], expected)
+        for key, value in expected.items():
+            self.assertEqual(result['intervals_seconds'][key]['distribution']['p50'], value)
+            self.assertEqual(result['intervals_seconds'][key]['negative_samples'], 0)
+        self.assertEqual(result['samples'][0]['timestamps']['job_completion_at'], '2026-01-01T01:00:13+01:00')
+        self.assertIn('not API-server commit time', result['boundaries']['pod_terminal_observed_at'])
+        self.assertEqual(result['clock_skew'], 'unqualified')
+        self.assertEqual(result['watch_delivery_lag'], 'unqualified')
+
+    def test_timing_missing_malformed_and_uid_unqualified_boundaries_never_become_zero(self):
+        pods = {run_id: {'pod_uid': 'pod-' + run_id, 'pod_job_uid': 'job-' + run_id,
+                        'finished_at': '2026-01-01T00:00:10Z',
+                        'pod_terminal_observed_at': '2026-01-01T00:00:11Z'} for run_id in ('a', 'b', 'c', 'd')}
+        jobs = {run_id: {'job_uid': 'job-' + run_id} for run_id in pods}
+        jobs['b']['job_uid'] = 'replacement'
+        jobs['b']['job_completion_at'] = '2026-01-01T00:00:13Z'
+        jobs['c'].update(job_completion_at='malformed-timestamp', job_terminal_condition_at='2026-01-01T00:00:13')
+        jobs['d']['job_completion_at'] = '2026-01-01T00:00:09Z'
+        records = [{'id': run_id, 'events': [{'state': 'succeeded', 'at': '2026-01-01T00:00:08Z'}]} for run_id in pods]
+        result = campaign.load_timing_breakdown(pods, jobs, records, {})
+        self.assertEqual(result['identity_counts'], {'matched': 3, 'unverified': 0, 'conflicting': 1})
+        self.assertEqual(result['timestamp_availability']['job_completion_at'],
+                         {'valid': 2, 'missing': 1, 'invalid': 1, 'conflicting': 0})
+        self.assertEqual(result['timestamp_availability']['job_terminal_condition_at']['invalid'], 1)
+        interval = result['intervals_seconds']['observed_pod_terminal_to_job_completion']
+        self.assertEqual(interval, {'valid_samples': 1, 'unavailable_samples': 3, 'negative_samples': 1,
+                                    'distribution': {'count': 1, 'min': -2, 'p50': -2, 'p95': -2, 'p99': -2, 'max': -2}})
+        self.assertEqual(result['samples'][1]['timestamps']['job_completion_at'], '2026-01-01T00:00:13Z')
+        self.assertIsNone(result['samples'][1]['intervals_seconds']['job_completion_to_persisted_terminal'])
+        self.assertNotIn('malformed-timestamp', str(result))
+        self.assertIsNone(result['intervals_seconds']['observed_job_terminal_to_observed_api_terminal']['distribution'])
+        unverified = campaign.load_timing_breakdown(pods, {}, records, {})
+        self.assertEqual(unverified['identity_counts']['unverified'], 4)
+        self.assertEqual(unverified['complete_three_stage_samples'], 0)
+        for invalid in ('', '0001-01-01T00:00:00Z', '2026-01-01T00:00:00', 1, True, {}, 'not-a-date'):
+            self.assertEqual(campaign.timing_timestamp(invalid), (None, 'invalid'))
+
+    def test_watch_never_merges_replacement_uids_or_conflicting_completion_facts(self):
+        from unittest.mock import Mock
+        job, pod = timing_objects()
+        for kind, original, identity in [('pods', pod, 'pod_uid'), ('jobs', job, 'job_uid')]:
+            with self.subTest(kind=kind):
+                watch = timing_watch(kind)
+                watch.record_object('ADDED', original, '2026-01-01T00:00:11Z', 'watch_receipt')
+                replacement = copy.deepcopy(original)
+                replacement['metadata']['uid'] = 'replacement'
+                watch.record_object('MODIFIED', replacement, '2026-01-01T00:00:20Z', 'watch_receipt')
+                times = watch.load_observations({'a'})[0]['a']
+                self.assertTrue(times[identity + '_conflict'])
+                self.assertEqual(times[identity], original['metadata']['uid'])
+                watch.process, watch.thread = Mock(), Mock()
+                watch.process.poll.return_value = None
+                watch.thread.is_alive.return_value = True
+                with self.assertRaisesRegex(campaign.CheckFailed, 'missing_or_duplicate_' + kind):
+                    watch.unique({'a'})
+                watch.record_object('ADDED', replacement, '2026-01-01T00:00:20Z', 'watch_receipt')
+                self.assertEqual(len(watch.seen['a']), 2)
+        watch = timing_watch('jobs')
+        for second in (13, 14):
+            job['status']['completionTime'] = '2026-01-01T00:00:' + str(second) + 'Z'
+            watch.record_object('MODIFIED', job, '2026-01-01T00:00:20Z', 'watch_receipt')
+        report = campaign.load_timing_breakdown({'a': {'pod_uid': 'pod-a', 'pod_job_uid': 'job-a'}},
+            watch.load_observations({'a'})[0], [{'id': 'a', 'events': []}], {})
+        self.assertEqual(report['timestamp_availability']['job_completion_at']['conflicting'], 1)
+        self.assertIsNone(report['samples'][0]['timestamps']['job_completion_at'])
+
+    def test_load_case_stamps_terminal_poll_responses_and_requires_both_unique_watches(self):
+        from unittest.mock import Mock
+        ids = ['load-2-0', 'load-2-1']
+        cluster = Mock()
+        cluster.configure_load.return_value = {'policy': 'fixture'}
+        cluster.submit.side_effect = lambda code, key, **kwargs: {'id': key}
+        cluster.finish.side_effect = lambda run, *args, **kwargs: {'id': run['id'], 'result': {'exit_code': 0},
+            'events': [{'state': 'succeeded', 'at': '2026-01-01T00:00:15Z'}]}
+        watch, jobs = Mock(), Mock()
+        watch.load_observations.return_value = ({run_id: {'pod_uid': 'pod-' + run_id,
+            'pod_job_uid': 'job-' + run_id, 'started_at': '2026-01-01T00:00:00Z',
+            'finished_at': '2026-01-01T00:00:10Z', 'pod_terminal_observed_at': '2026-01-01T00:00:11Z'} for run_id in ids}, 2)
+        # A future early-Pod result may legitimately have no completed Job yet.
+        jobs.load_observations.return_value = ({run_id: {'job_uid': 'job-' + run_id,
+            'job_deleted_observed_at': '2026-01-01T00:00:14Z'} for run_id in ids}, 0)
+        with patch.object(campaign, 'observed_timestamp', side_effect=['2026-01-01T00:00:16Z', '2026-01-01T00:00:17Z']):
+            result = campaign.load_case(cluster, watch, 2, jobs)
+        self.assertEqual(watch.unique.call_count, 2)
+        self.assertEqual(jobs.unique.call_count, 2)
+        watch.unique.assert_called_with(set(ids))
+        jobs.unique.assert_called_with(set(ids))
+        self.assertEqual(cluster.submit.call_count, 2)
+        self.assertEqual(cluster.finish.call_count, 2)
+        self.assertEqual([sample['timestamps']['api_terminal_observed_at'] for sample in result['timing_breakdown']['samples']],
+                         ['2026-01-01T00:00:16Z', '2026-01-01T00:00:17Z'])
+        self.assertEqual(result['timing_breakdown']['timestamp_availability']['job_completion_at']['missing'], 2)
+        self.assertEqual(result['timing_breakdown']['watch_drain']['job']['deleted_without_terminal'], 2)
+        self.assertEqual(result['pod_exit_to_persisted_terminal_seconds']['p95'], 5)
+
+    def test_load_watch_drain_retains_queued_terminal_events_and_reports_censoring(self):
+        from unittest.mock import Mock
+        watch = Mock()
+        samples = [{'a': {}}, {'a': {'job_terminal_observed_at': '2026-01-01T00:00:14Z'}}]
+        watch.load_observations.side_effect = [(sample, 0) for sample in samples]
+        with patch.object(campaign.time, 'sleep'):
+            result = campaign.drain_load_watch(watch, {'a'}, 'job')
+        self.assertEqual(result, {'status': 'complete', 'wait_limit_seconds': 15, 'terminal_observed': 1,
+                                 'deleted_without_terminal': 0, 'no_terminal_or_deletion': 0})
+        watch.load_observations.side_effect = None
+        watch.load_observations.return_value = ({'a': {}}, 0)
+        with patch.object(campaign, 'eventually', side_effect=campaign.CheckFailed('load_job_watch_drain_timeout')):
+            result = campaign.drain_load_watch(watch, {'a'}, 'job')
+        self.assertEqual(result['status'], 'timed_out')
+        self.assertEqual(result['no_terminal_or_deletion'], 1)
+
+    def test_conflicting_container_times_are_preserved_and_excluded_from_decomposition(self):
+        _, pod = timing_objects()
+        watch = timing_watch('pods')
+        watch.record_object('ADDED', pod, '2026-01-01T00:00:11Z', 'watch_receipt')
+        pod['status']['containerStatuses'][0]['state']['terminated']['finishedAt'] = '2026-01-01T00:00:12Z'
+        watch.record_object('DELETED', pod, '2026-01-01T00:00:14Z', 'watch_receipt')
+        times = watch.load_observations({'a'})[0]
+        self.assertEqual(times['a']['finished_at'], '2026-01-01T00:00:10Z')
+        self.assertTrue(times['a']['finished_at_conflict'])
+        measured = campaign.load_timing_breakdown(times, {'a': {'job_uid': 'job-a'}}, [{'id': 'a', 'events': []}], {})
+        self.assertEqual(measured['timestamp_availability']['container_finished_at']['conflicting'], 1)
+        self.assertIsNone(measured['samples'][0]['timestamps']['container_finished_at'])
+
     def test_offline_deadline_uses_persisted_clock_and_waits_for_terminal_job(self):
         import copy
 

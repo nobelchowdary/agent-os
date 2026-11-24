@@ -2,7 +2,7 @@
 """Opt-in gVisor lifecycle checks; defaults target the disposable agentos-ci cluster."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 import importlib.util
 import ipaddress
 import json
@@ -377,8 +377,11 @@ class ObjectWatch:
     def __init__(self, cluster, kind):
         self.cluster, self.kind = cluster, kind
         self.seen, self.errors, self.lock = {}, [], threading.Lock()
-        self.pod_times, self.running, self.running_history = {}, set(), []
+        self.pod_times, self.job_times, self.running, self.running_history = {}, {}, set(), []
         listing = cluster.obj(kind)
+        observed_at = observed_timestamp()
+        for value in listing.get('items', []):
+            self.record_object('LIST', value, observed_at, 'list_snapshot')
         version = listing['metadata']['resourceVersion']
         # kubectl get has no --resource-version flag. Its raw transport can
         # request the API watch directly from the LIST snapshot without a gap.
@@ -414,40 +417,89 @@ class ObjectWatch:
                 if event['type'] == 'ERROR':
                     self.errors.append('watch_error')
                     return
-                value = event['object']
-                metadata = value.get('metadata', {})
-                run_id = metadata.get('labels', {}).get(RUN_LABEL)
-                if run_id:
-                    with self.lock:
-                        if event['type'] == 'ADDED':
-                            self.seen.setdefault(run_id, set()).add(metadata['uid'])
-                        if self.kind == 'pods':
-                            for container in value.get('status', {}).get('containerStatuses', []):
-                                if container['name'] != 'agent':
-                                    continue
-                                state = container.get('state', {})
-                                active = state.get('running', {})
-                                ended = state.get('terminated', {})
-                                times = self.pod_times.setdefault(run_id, {})
-                                if active.get('startedAt') or ended.get('startedAt'):
-                                    times['started_at'] = active.get('startedAt') or ended['startedAt']
-                                if ended.get('finishedAt'):
-                                    times['finished_at'] = ended['finishedAt']
-                                if active and event['type'] != 'DELETED':
-                                    self.running.add(run_id)
-                                else:
-                                    self.running.discard(run_id)
-                                self.running_history.append(frozenset(self.running))
+                self.record_object(event['type'], event['object'], observed_timestamp(), 'watch_receipt')
+
+    def record_object(self, event_type, value, observed_at, source):
+        metadata, status = value.get('metadata', {}), value.get('status', {})
+        run_id = metadata.get('labels', {}).get(RUN_LABEL)
+        if not run_id:
+            return
+        with self.lock:
+            if event_type in ('ADDED', 'LIST'):
+                self.seen.setdefault(run_id, set()).add(metadata['uid'])
+            times = (self.pod_times if self.kind == 'pods' else self.job_times).setdefault(run_id, {})
+            identity = 'pod_uid' if self.kind == 'pods' else 'job_uid'
+            retain_timing_fact(times, identity, metadata.get('uid'))
+            if times.get(identity + '_conflict'):
+                # Never combine the status of replacement objects into one
+                # execution's timing. The existing unique-UID gate still fails.
+                return
+            if event_type == 'DELETED':
+                times.setdefault(('pod' if self.kind == 'pods' else 'job') + '_deleted_observed_at', observed_at)
+            if self.kind == 'jobs':
+                if 'completionTime' in status:
+                    retain_timing_fact(times, 'job_completion_at', status['completionTime'])
+                success = [condition for condition in status.get('conditions', [])
+                           if condition.get('type') == 'SuccessCriteriaMet' and condition.get('status') == 'True']
+                if success:
+                    times.setdefault('job_success_criteria_observed_at', observed_at)
+                    times.setdefault('job_success_criteria_observation_source', source)
+                    if len(success) != 1:
+                        times['job_success_criteria_conflict'] = True
+                    for condition in success:
+                        if 'lastTransitionTime' in condition:
+                            retain_timing_fact(times, 'job_success_criteria_condition_at', condition['lastTransitionTime'])
+                terminal = [condition for condition in status.get('conditions', [])
+                            if condition.get('type') in ('Complete', 'Failed') and condition.get('status') == 'True']
+                if terminal:
+                    times.setdefault('job_terminal_observed_at', observed_at)
+                    times.setdefault('job_terminal_observation_source', source)
+                    if len(terminal) != 1:
+                        times['job_terminal_condition_conflict'] = True
+                    for condition in terminal:
+                        retain_timing_fact(times, 'job_terminal_condition', condition['type'])
+                        if 'lastTransitionTime' in condition:
+                            retain_timing_fact(times, 'job_terminal_condition_at', condition['lastTransitionTime'])
+                return
+            owners = [owner for owner in metadata.get('ownerReferences', []) if owner.get('controller') is True]
+            if (len(owners) == 1 and owners[0].get('apiVersion') == 'batch/v1'
+                    and owners[0].get('kind') == 'Job' and owners[0].get('name') == 'agentos-' + run_id
+                    and isinstance(owners[0].get('uid'), str) and owners[0]['uid']):
+                retain_timing_fact(times, 'pod_job_uid', owners[0]['uid'])
+            else:
+                times['pod_job_owner_unverified'] = True
+            if status.get('phase') in ('Succeeded', 'Failed'):
+                times.setdefault('pod_terminal_observed_at', observed_at)
+                times.setdefault('pod_terminal_observation_source', source)
+                retain_timing_fact(times, 'pod_terminal_phase', status['phase'])
+            for container in status.get('containerStatuses', []):
+                if container['name'] != 'agent':
+                    continue
+                state = container.get('state', {})
+                active, ended = state.get('running', {}), state.get('terminated', {})
+                if active.get('startedAt') or ended.get('startedAt'):
+                    started_at = active.get('startedAt') or ended['startedAt']
+                    retain_timing_fact(times, 'started_at', started_at)
+                if ended.get('finishedAt'):
+                    retain_timing_fact(times, 'finished_at', ended['finishedAt'])
+                if active and event_type != 'DELETED':
+                    self.running.add(run_id)
+                else:
+                    self.running.discard(run_id)
+                self.running_history.append(frozenset(self.running))
 
     def load_observations(self, ids):
         with self.lock:
-            return ({run_id: dict(self.pod_times.get(run_id, {})) for run_id in ids},
+            source = self.pod_times if self.kind == 'pods' else self.job_times
+            return ({run_id: dict(source.get(run_id, {})) for run_id in ids},
                     max((len(snapshot.intersection(ids)) for snapshot in self.running_history), default=0))
 
     def unique(self, ids):
         require(self.process.poll() is None and not self.errors and self.thread.is_alive(), 'watch_continuity_lost')
         with self.lock:
-            require(all(len(self.seen.get(run_id, ())) == 1 for run_id in ids), 'missing_or_duplicate_' + self.kind)
+            source, identity = (self.pod_times, 'pod_uid') if self.kind == 'pods' else (self.job_times, 'job_uid')
+            require(all(len(self.seen.get(run_id, ())) == 1 and not source.get(run_id, {}).get(identity + '_conflict')
+                        for run_id in ids), 'missing_or_duplicate_' + self.kind)
 
     def close(self):
         self.process.terminate()
@@ -595,6 +647,17 @@ def finished_kubelet_unavailable(cluster):
             cluster.rollout()
 
 
+def observed_timestamp():
+    return datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+
+
+def retain_timing_fact(times, key, value):
+    if key not in times:
+        times[key] = value
+    elif times[key] != value:
+        times[key + '_conflict'] = True
+
+
 def timestamp(value):
     return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
 
@@ -608,10 +671,119 @@ def distribution(values):
             'max': round(ordered[-1], 6)}
 
 
-def load_measurements(watch, records, target):
+def timing_timestamp(value):
+    if value is None:
+        return None, 'missing'
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00')) if isinstance(value, str) else None
+        if parsed is not None and parsed.year > 1 and parsed.tzinfo is not None and math.isfinite(parsed.timestamp()):
+            return parsed.timestamp(), 'valid'
+    except (ValueError, OverflowError, OSError):
+        pass
+    return None, 'invalid'
+
+
+def load_timing_breakdown(pod_observations, job_observations, records, api_observations):
+    """Keep source timestamps separate from harness receipts and their clock/delivery error."""
+    boundaries = {
+        'container_started_at': 'kubelet agent-container startedAt; node clock',
+        'container_finished_at': 'kubelet agent-container finishedAt; node clock',
+        'pod_terminal_observed_at': 'first harness receipt of terminal Pod phase; not API-server commit time',
+        'job_completion_at': 'Job.status.completionTime; Job-controller clock and semantics',
+        'job_terminal_condition_at': 'terminal Job condition lastTransitionTime; Job-controller clock',
+        'job_terminal_observed_at': 'first harness receipt of terminal Job condition; not API-server commit time',
+        'job_success_criteria_condition_at': 'SuccessCriteriaMet=True lastTransitionTime; Job-controller clock',
+        'job_success_criteria_observed_at': 'first harness receipt of SuccessCriteriaMet=True; not API-server commit time',
+        'api_terminal_persisted_at': 'Agent OS persisted terminal event at; API process clock',
+        'api_terminal_observed_at': 'harness load poll returned terminal response; includes sequential polling/order delay',
+    }
+    pairs = {
+        'container_exit_to_observed_pod_terminal': ('container_finished_at', 'pod_terminal_observed_at'),
+        'observed_pod_terminal_to_job_completion': ('pod_terminal_observed_at', 'job_completion_at'),
+        'job_completion_to_persisted_terminal': ('job_completion_at', 'api_terminal_persisted_at'),
+        'container_exit_to_job_completion': ('container_finished_at', 'job_completion_at'),
+        'observed_pod_terminal_to_observed_job_terminal': ('pod_terminal_observed_at', 'job_terminal_observed_at'),
+        'observed_job_terminal_to_observed_api_terminal': ('job_terminal_observed_at', 'api_terminal_observed_at'),
+        'job_completion_to_observed_job_terminal': ('job_completion_at', 'job_terminal_observed_at'),
+        'observed_pod_terminal_to_observed_success_criteria': ('pod_terminal_observed_at', 'job_success_criteria_observed_at'),
+        'observed_success_criteria_to_observed_job_terminal': ('job_success_criteria_observed_at', 'job_terminal_observed_at'),
+        'success_criteria_condition_to_job_completion': ('job_success_criteria_condition_at', 'job_completion_at'),
+        'success_criteria_condition_to_persisted_terminal': ('job_success_criteria_condition_at', 'api_terminal_persisted_at'),
+    }
+    samples, identities = [], {status: 0 for status in ('matched', 'unverified', 'conflicting')}
+    availability = {key: {status: 0 for status in ('valid', 'missing', 'invalid', 'conflicting')}
+                    for key in boundaries}
+    values = {key: [] for key in pairs}
+    for record in records:
+        run_id = record['id']
+        pod, job = pod_observations.get(run_id, {}), job_observations.get(run_id, {})
+        pod_uid, owner_uid, job_uid = pod.get('pod_uid'), pod.get('pod_job_uid'), job.get('job_uid')
+        identity = 'unverified'
+        if any(item.get(key) for item, key in ((pod, 'pod_uid_conflict'), (pod, 'pod_job_uid_conflict'),
+                                                (job, 'job_uid_conflict'))):
+            identity = 'conflicting'
+        elif all(isinstance(uid, str) and uid for uid in (pod_uid, owner_uid, job_uid)):
+            identity = 'matched' if owner_uid == job_uid and not pod.get('pod_job_owner_unverified') else 'conflicting'
+        identities[identity] += 1
+        terminal = [event for event in record['events'] if event['state'] in TERMINAL]
+        raw = {'container_started_at': pod.get('started_at'), 'container_finished_at': pod.get('finished_at'),
+               'pod_terminal_observed_at': pod.get('pod_terminal_observed_at'),
+               'job_completion_at': job.get('job_completion_at'),
+               'job_terminal_condition_at': job.get('job_terminal_condition_at'),
+               'job_terminal_observed_at': job.get('job_terminal_observed_at'),
+               'job_success_criteria_condition_at': job.get('job_success_criteria_condition_at'),
+               'job_success_criteria_observed_at': job.get('job_success_criteria_observed_at'),
+               'api_terminal_persisted_at': terminal[0]['at'] if len(terminal) == 1 else None,
+               'api_terminal_observed_at': api_observations.get(run_id)}
+        parsed, statuses = {}, {}
+        for key, value in raw.items():
+            parsed[key], statuses[key] = timing_timestamp(value)
+            if pod.get(key + '_conflict') or job.get(key + '_conflict') or (
+                    key == 'container_started_at' and pod.get('started_at_conflict')) or (
+                    key == 'container_finished_at' and pod.get('finished_at_conflict')) or (
+                    key == 'pod_terminal_observed_at' and pod.get('pod_terminal_phase_conflict')) or (
+                    key in ('job_completion_at', 'job_terminal_condition_at', 'job_terminal_observed_at')
+                    and job.get('job_terminal_condition_conflict')) or (
+                    key in ('job_success_criteria_condition_at', 'job_success_criteria_observed_at')
+                    and job.get('job_success_criteria_conflict')):
+                parsed[key], statuses[key] = None, 'conflicting'
+            availability[key][statuses[key]] += 1
+        intervals = {}
+        for name, (start, end) in pairs.items():
+            interval = parsed[end] - parsed[start] if identity == 'matched' and parsed[start] is not None and parsed[end] is not None else None
+            intervals[name] = round(interval, 6) if interval is not None else None
+            if interval is not None:
+                values[name].append(interval)
+        samples.append({'run_id': run_id, 'pod_uid': pod_uid, 'pod_job_uid': owner_uid, 'job_uid': job_uid,
+                        'identity': identity,
+                        # Invalid timestamp prose is not useful timing evidence.
+                        'timestamps': {key: value if statuses[key] == 'valid' else None for key, value in raw.items()},
+                        'timestamp_status': statuses,
+                        'pod_terminal_phase': pod.get('pod_terminal_phase'),
+                        'job_terminal_condition': job.get('job_terminal_condition'),
+                        'pod_terminal_observation_source': pod.get('pod_terminal_observation_source'),
+                        'job_terminal_observation_source': job.get('job_terminal_observation_source'),
+                        'job_success_criteria_observation_source': job.get('job_success_criteria_observation_source'),
+                        'pod_deleted_observed_at': pod.get('pod_deleted_observed_at'),
+                        'job_deleted_observed_at': job.get('job_deleted_observed_at'),
+                        'intervals_seconds': intervals})
+    return {'boundaries': boundaries, 'clock_skew': 'unqualified', 'watch_delivery_lag': 'unqualified',
+            'attribution': 'observation boundaries, not isolated component service times',
+            'identity_counts': identities, 'timestamp_availability': availability,
+            'complete_three_stage_samples': sum(all(sample['intervals_seconds'][key] is not None for key in (
+                'container_exit_to_observed_pod_terminal', 'observed_pod_terminal_to_job_completion',
+                'job_completion_to_persisted_terminal')) for sample in samples),
+            'intervals_seconds': {name: {'valid_samples': len(items), 'unavailable_samples': len(records) - len(items),
+                'negative_samples': sum(value < 0 for value in items),
+                'distribution': distribution(items) if items else None} for name, items in values.items()},
+            'samples': samples}
+
+
+def load_measurements(watch, records, target, job_watch=None, api_observations=None):
     ids = {record['id'] for record in records}
     require(len(ids) == target, 'load_receipt_count_mismatch')
     observations, observed_peak = watch.load_observations(ids)
+    job_observations = job_watch.load_observations(ids)[0] if job_watch is not None else {}
     intervals, lags = [], []
     result_capture = {name: 0 for name in ('captured', 'unavailable', 'expired', 'missing', 'unknown',
                                          'output_complete', 'output_incomplete', 'output_completeness_missing')}
@@ -642,13 +814,36 @@ def load_measurements(watch, records, target):
             'pod_exit_to_persisted_terminal_seconds': distribution(lags),
             'result_capture': result_capture,
             'clock_basis': 'node agent-container finishedAt to API terminal event at; clock skew unqualified',
-            'negative_lag_samples': sum(value < 0 for value in lags)}
+            'negative_lag_samples': sum(value < 0 for value in lags),
+            'timing_breakdown': load_timing_breakdown(observations, job_observations, records, api_observations or {})}
     if observed_peak < target or interval_peak < target:
         raise CheckFailed('target_running_concurrency_not_observed', evidence=measurements)
     return measurements
 
 
-def load_case(cluster, watch, count):
+def drain_load_watch(watch, ids, kind):
+    """Allow independent local watch readers to catch up, without inventing a missing Job outcome."""
+    terminal, deleted = kind + '_terminal_observed_at', kind + '_deleted_observed_at'
+    category = 'load_' + kind + '_watch_drain_timeout'
+    complete = False
+    try:
+        observations = eventually(lambda: watch.load_observations(ids)[0],
+            lambda items: all(items.get(run_id, {}).get(terminal) or items.get(run_id, {}).get(deleted) for run_id in ids),
+            timeout=15, category=category)
+        complete = True
+    except CheckFailed as failure:
+        if str(failure) != category:
+            raise
+        observations = watch.load_observations(ids)[0]
+    return {'status': 'complete' if complete else 'timed_out', 'wait_limit_seconds': 15,
+            'terminal_observed': sum(bool(observations.get(run_id, {}).get(terminal)) for run_id in ids),
+            'deleted_without_terminal': sum(bool(observations.get(run_id, {}).get(deleted))
+                and not observations.get(run_id, {}).get(terminal) for run_id in ids),
+            'no_terminal_or_deletion': sum(not observations.get(run_id, {}).get(terminal)
+                and not observations.get(run_id, {}).get(deleted) for run_id in ids)}
+
+
+def load_case(cluster, watch, count, job_watch=None):
     # Hold tasks to a common wall-clock gate so admission count cannot stand in
     # for measured running concurrency. Insufficient resources fail this case.
     configuration = cluster.configure_load(count)
@@ -657,23 +852,37 @@ def load_case(cluster, watch, count):
     with ThreadPoolExecutor(max_workers=count) as pool:
         runs = list(pool.map(lambda index: cluster.submit(code, 'load-' + str(count) + '-' + str(index),
                                                          template='load', timeout=300), range(count)))
-    records = []
+    records, api_observations = [], {}
     try:
         for run in runs:
             done = cluster.finish(run, 'succeeded', 'completed', timeout=360)
+            api_observations[run['id']] = observed_timestamp()
             require(done.get('result', {}).get('exit_code') == 0, 'load_missing_success_exit_status')
             records.append(done)
         eventually(lambda: watch.load_observations({run['id'] for run in runs})[0],
                    lambda observations: all('finished_at' in item for item in observations.values()),
                    timeout=15, category='load_watch_missing_exit')
-        watch.unique({run['id'] for run in runs})
-        return {**load_measurements(watch, records, count), 'configuration': configuration}
+        ids = {run['id'] for run in runs}
+        watch.unique(ids)
+        drains = {'pod': drain_load_watch(watch, ids, 'pod'), 'job': {'status': 'not_configured'}}
+        if job_watch is not None:
+            job_watch.unique(ids)
+            drains['job'] = drain_load_watch(job_watch, ids, 'job')
+            job_watch.unique(ids)
+        watch.unique(ids)
+        measured = load_measurements(watch, records, count, job_watch, api_observations)
+        measured['timing_breakdown']['watch_drain'] = drains
+        return {**measured, 'configuration': configuration}
     except CheckFailed as failure:
         if failure.evidence is None:
             observations, peak = watch.load_observations({run['id'] for run in runs})
+            jobs = job_watch.load_observations({run['id'] for run in runs})[0] if job_watch is not None else {}
+            by_id = {record['id']: record for record in records}
+            partial = [by_id.get(run['id'], {'id': run['id'], 'events': []}) for run in runs]
             failure.evidence = {'target_concurrency': count, 'peak_observed_running_containers': peak,
                                 'receipts': len(runs), 'validated_terminal_records': len(records),
-                                'pods_with_exit_timestamp': sum('finished_at' in item for item in observations.values())}
+                                'pods_with_exit_timestamp': sum('finished_at' in item for item in observations.values()),
+                                'timing_breakdown': load_timing_breakdown(observations, jobs, partial, api_observations)}
         failure.evidence['configuration'] = configuration
         raise
 
@@ -860,7 +1069,7 @@ def run_campaign(cluster, sequential, crash_submits, only_case='all', load_sizes
             results.append({'case': 'crash_count', 'api_pod_deletions': len(crashes), 'status': 'observed'})
         case('crash_during_' + str(crash_submits) + '_idempotent_submits', crash_campaign)
         for size in load_sizes:
-            case('load_' + str(size), lambda size=size: load_case(cluster, watchers[1], size))
+            case('load_' + str(size), lambda size=size: load_case(cluster, watchers[1], size, watchers[0]))
         for watch in watchers:
             require(not watch.errors and watch.thread.is_alive(), 'watch_continuity_lost')
         return results
