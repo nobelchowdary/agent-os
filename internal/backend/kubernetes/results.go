@@ -76,7 +76,7 @@ func (b *Backend) CaptureResult(ctx context.Context, id string) (model.Execution
 	if err != nil {
 		return result, err
 	}
-	pods, err := b.runPods(ctx, id, job.UID)
+	pods, err := b.executionPods(ctx, id, job)
 	if err != nil {
 		return result, err
 	}
@@ -98,25 +98,31 @@ func (b *Backend) CaptureResult(ctx context.Context, id string) (model.Execution
 	limit := captureScanBytes + 1
 	stream, err := b.client.CoreV1().Pods(b.namespace).GetLogs(pods[0].Name, &corev1.PodLogOptions{Container: "agent", LimitBytes: &limit}).Stream(ctx)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return result, nil // Preserve the observed exit when logs are gone.
+		if apierrors.IsNotFound(err) || apierrors.IsBadRequest(err) {
+			// Kubelet reports BadRequest when an agent container never started
+			// or its logs are no longer available. Retrying cannot recover those
+			// logs; preserve any separately observed exit as the final result.
+			return result, nil
 		}
 		return result, fmt.Errorf("capture execution logs: %w", err)
 	}
 	defer stream.Close()
-	head, tail, count, complete := boundedOutput(stream, captureScanBytes)
+	head, tail, count, complete, readErr := boundedOutput(stream, captureScanBytes)
 	result.Status = "captured"
 	var clippedHead, clippedTail bool
 	result.OutputHead, clippedHead = validOutput(head, false)
 	result.OutputTail, clippedTail = validOutput(tail, true)
 	result.OutputTruncated = count > 2*resultPartBytes || !complete || clippedHead || clippedTail
 	result.OutputComplete = complete && terminated
+	if readErr != nil {
+		return result, fmt.Errorf("read execution logs: %w", readErr)
+	}
 	return result, nil
 }
 
 // boundedOutput keeps the first and last bytes of the scanned stream. For a
 // short stream the parts do not overlap. EOF beyond the scan cap is unknown.
-func boundedOutput(reader io.Reader, limit int64) (head, tail []byte, count int64, complete bool) {
+func boundedOutput(reader io.Reader, limit int64) (head, tail []byte, count int64, complete bool, readErr error) {
 	buffer := make([]byte, 32*1024)
 	for count <= limit {
 		size := int64(len(buffer))
@@ -143,9 +149,13 @@ func boundedOutput(reader io.Reader, limit int64) (head, tail []byte, count int6
 		}
 		if err != nil {
 			complete = errors.Is(err, io.EOF)
+			if !complete {
+				readErr = err
+			}
 			break
 		}
 		if n == 0 {
+			readErr = io.ErrNoProgress
 			break
 		} // A broken reader must not spin forever.
 	}
@@ -154,7 +164,7 @@ func boundedOutput(reader io.Reader, limit int64) (head, tail []byte, count int6
 	} else if count <= 2*resultPartBytes {
 		tail = tail[len(tail)-int(count-resultPartBytes):]
 	}
-	return head, tail, count, complete
+	return head, tail, count, complete, readErr
 }
 
 func validOutput(data []byte, tail bool) (string, bool) {

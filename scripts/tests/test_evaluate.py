@@ -124,6 +124,7 @@ class FakeAPI:
         w = self.registration["workload"]
         return {"id": self.run_id, "state": "succeeded", "spec": {
             **{k: w[k] for k in ("template", "image", "command", "resources", "timeout_seconds", "runtime_profile")},
+            **({"termination_grace_period_seconds": w["termination_grace_period_seconds"]} if "termination_grace_period_seconds" in w else {}),
             "runtime_class": w["runtime_profile"]["runtime_class"]}}
 
     def call(self, path, body=None, key=None):
@@ -232,6 +233,26 @@ class EvaluationTest(unittest.TestCase):
         template, pool = ev.upstream_manifests(registration)
         self.assertEqual(template["spec"]["podTemplate"]["spec"]["activeDeadlineSeconds"], 30)
         self.assertEqual(pool["spec"]["replicas"], 0)
+
+    def test_grace_is_registered_and_compared_without_changing_legacy_inputs(self):
+        current = workload()
+        legacy = copy.deepcopy(current)
+        legacy.pop("termination_grace_period_seconds", None)
+        ev.validate_workload(legacy)
+        self.assertNotIn("termination_grace_period_seconds", legacy)
+        self.assertNotIn("terminationGracePeriodSeconds", ev.pod_template(legacy, {})["spec"])
+        current["termination_grace_period_seconds"] = 10
+        ev.validate_workload(current)
+        expected = ev.pod_template(current, {})["spec"]
+        self.assertEqual(expected["terminationGracePeriodSeconds"], 10)
+        drift = copy.deepcopy(expected)
+        drift["terminationGracePeriodSeconds"] = 30
+        with self.assertRaisesRegex(ev.Failure, "pod_profile_changed"):
+            ev.assert_pod_profile(drift, expected)
+        for invalid in (0, -1, 31, True, 1.5):
+            current["termination_grace_period_seconds"] = invalid
+            with self.assertRaisesRegex(ev.Failure, "termination_grace_bounds"):
+                ev.validate_workload(current)
 
     def test_late_create_absence_remains_unknown(self):
         registration = self.registered()

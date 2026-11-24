@@ -119,13 +119,14 @@ type RuntimeProfile struct {
 
 // Spec is resolved from an administrator-owned template, never a caller PodSpec.
 type Spec struct {
-	Template       string          `json:"template"`
-	Image          string          `json:"image"`
-	RuntimeClass   string          `json:"runtime_class"`
-	RuntimeProfile *RuntimeProfile `json:"runtime_profile,omitempty"`
-	Command        []string        `json:"command"`
-	Resources      Resources       `json:"resources"`
-	TimeoutSeconds int64           `json:"timeout_seconds"`
+	Template                      string          `json:"template"`
+	Image                         string          `json:"image"`
+	RuntimeClass                  string          `json:"runtime_class"`
+	RuntimeProfile                *RuntimeProfile `json:"runtime_profile,omitempty"`
+	Command                       []string        `json:"command"`
+	Resources                     Resources       `json:"resources"`
+	TimeoutSeconds                int64           `json:"timeout_seconds"`
+	TerminationGracePeriodSeconds int64           `json:"termination_grace_period_seconds,omitempty"`
 }
 
 type CreateRequest struct {

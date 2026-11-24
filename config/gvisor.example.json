@@ -18,14 +18,16 @@
       "command": ["python", "-c", "print('hello from Agent OS')"],
       "resources": {"cpu_milli": 500, "memory_mib": 256, "disk_mib": 128},
       "default_timeout_seconds": 60,
-      "max_timeout_seconds": 300
+      "max_timeout_seconds": 300,
+      "termination_grace_period_seconds": 10
     },
     "node": {
       "image": "node@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5",
       "command": ["node", "-e", "console.log('hello from Agent OS')"],
       "resources": {"cpu_milli": 500, "memory_mib": 256, "disk_mib": 128},
       "default_timeout_seconds": 60,
-      "max_timeout_seconds": 300
+      "max_timeout_seconds": 300,
+      "termination_grace_period_seconds": 10
     }
   }
 }

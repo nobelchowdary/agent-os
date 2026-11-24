@@ -35,6 +35,8 @@ The new private registration stores canonical JSON hashes, workload, context, tr
 
 Use `python-nitro-workload.json` with the Nitro administrator config for a **separate** experiment. Adjust the registered workload's resources to match its administrator template exactly. RuntimeClass, image, arguments, resource or annotation drift stops collection. Reports from different registered workloads/environments cannot automatically pass a matched-comparison gate.
 
+New example workloads also register `termination_grace_period_seconds: 10`, matching the administrator template. The collector compares grace in the resolved API specification and actual execution. Older registrations without the field retain their implicit Kubernetes 30-second contract; changing an example does not rewrite their hashes or inputs. Use a new registration for changed policy.
+
 ## 4. Collect and retain all outcomes
 
 With the upstream controller installed and Agent OS authenticated through a local port-forward, set `AGENTOS_EVAL_TOKEN` in the shell. The token is read from the environment, not CLI arguments or report output.

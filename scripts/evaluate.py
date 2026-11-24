@@ -118,8 +118,9 @@ def write_json(path, value, exclusive=False):
 
 
 def validate_workload(workload):
-    require(set(workload) == {"format_version", "template", "image", "command", "resources",
-                              "timeout_seconds", "runtime_profile", "validation"}, "workload_fields")
+    fields = {"format_version", "template", "image", "command", "resources",
+              "timeout_seconds", "runtime_profile", "validation"}
+    require(fields <= set(workload) <= fields | {"termination_grace_period_seconds"}, "workload_fields")
     require(workload["format_version"] == 1, "workload_version")
     require(isinstance(workload["template"], str) and NAME.fullmatch(workload["template"]), "template_name")
     require(isinstance(workload["image"], str) and DIGEST.fullmatch(workload["image"]), "image_must_be_digest_pinned")
@@ -132,6 +133,9 @@ def validate_workload(workload):
     for key, lower, upper in (("cpu_milli", 1, 64000), ("memory_mib", 16, 65536), ("disk_mib", 16, 65536)):
         require(type(resources[key]) is int and lower <= resources[key] <= upper, "resource_bounds")
     require(type(workload["timeout_seconds"]) is int and 1 <= workload["timeout_seconds"] <= 3600, "timeout_bounds")
+    if "termination_grace_period_seconds" in workload:
+        grace = workload["termination_grace_period_seconds"]
+        require(type(grace) is int and 1 <= grace <= 30, "termination_grace_bounds")
     profile = workload["runtime_profile"]
     require(isinstance(profile, dict) and set(profile) == {"kind", "runtime_class", "required_handler"}, "runtime_profile_fields")
     require(isinstance(profile["runtime_class"], str) and NAME.fullmatch(profile["runtime_class"]), "runtime_class_name")
@@ -194,6 +198,8 @@ def pod_template(workload, labels, execution_deadline=False):
                                          {"name": "tmp", "mountPath": "/tmp"}]}], "volumes": volumes}}
     if workload["runtime_profile"]["kind"] == "aws-nitro-isolated":
         template["spec"]["nodeSelector"] = {"eks.amazonaws.com/nitro-sandbox": "true"}
+    if "termination_grace_period_seconds" in workload:
+        template["spec"]["terminationGracePeriodSeconds"] = workload["termination_grace_period_seconds"]
     if execution_deadline:
         template["spec"]["activeDeadlineSeconds"] = workload["timeout_seconds"]
     return template
@@ -417,6 +423,8 @@ def assert_pod_profile(actual, expected):
     # Admission may add scheduling defaults. All execution, volume, token and
     # security fields must match; injected sidecars/credentials cannot pass.
     actual, expected = normalized_pod(actual), normalized_pod(expected)
+    require(actual.get("terminationGracePeriodSeconds", 30) == expected.get("terminationGracePeriodSeconds", 30),
+            "pod_profile_changed")
     for key in ("containers", "volumes", "securityContext", "runtimeClassName", "restartPolicy",
                 "serviceAccountName", "automountServiceAccountToken", "activeDeadlineSeconds"):
         require(actual.get(key) == expected.get(key), "pod_profile_changed")
@@ -506,6 +514,8 @@ def assert_record_spec(record, registration):
     workload = registration["workload"]
     for key in ("template", "image", "command", "resources", "timeout_seconds"):
         require(spec.get(key) == workload[key], "api_resolved_spec_mismatch")
+    require(spec.get("termination_grace_period_seconds", 30) == workload.get("termination_grace_period_seconds", 30),
+            "api_resolved_spec_mismatch")
     require(spec.get("runtime_class") == workload["runtime_profile"]["runtime_class"], "api_resolved_spec_mismatch")
     if spec.get("runtime_profile") is not None:
         require(spec["runtime_profile"] == workload["runtime_profile"], "api_resolved_spec_mismatch")

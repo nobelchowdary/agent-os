@@ -128,8 +128,8 @@ func TestObserveDisruptionAttributionUsesStructuredEvidence(t *testing.T) {
 				pod.Status.Conditions = []corev1.PodCondition{*tc.condition}
 			}
 			ob, err := observeFacts(t, failed, pod)
-			if err != nil || ob.State != model.Failed || ob.ReasonCode != model.ReasonUnknown || strings.Contains(ob.Reason, tc.message) && tc.message != "" {
-				t.Fatalf("unattributed eviction invented a cause: %+v, %v", ob, err)
+			if err != nil || ob.State != model.Failed || ob.ReasonCode != model.ReasonInfraFailure || strings.Contains(ob.Reason, tc.message) && tc.message != "" {
+				t.Fatalf("unstarted eviction was attributed to workload: %+v, %v", ob, err)
 			}
 		})
 	}

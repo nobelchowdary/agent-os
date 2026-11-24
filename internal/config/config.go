@@ -25,11 +25,12 @@ type Principal struct {
 }
 
 type Template struct {
-	Image                 string          `json:"image"`
-	Command               []string        `json:"command"`
-	Resources             model.Resources `json:"resources"`
-	DefaultTimeoutSeconds int64           `json:"default_timeout_seconds"`
-	MaxTimeoutSeconds     int64           `json:"max_timeout_seconds"`
+	Image                         string          `json:"image"`
+	Command                       []string        `json:"command"`
+	Resources                     model.Resources `json:"resources"`
+	DefaultTimeoutSeconds         int64           `json:"default_timeout_seconds"`
+	MaxTimeoutSeconds             int64           `json:"max_timeout_seconds"`
+	TerminationGracePeriodSeconds int64           `json:"termination_grace_period_seconds,omitempty"`
 }
 
 type Config struct {
@@ -110,6 +111,9 @@ func (c Config) Validate() error {
 		}
 		if t.DefaultTimeoutSeconds < 1 || t.MaxTimeoutSeconds < t.DefaultTimeoutSeconds || t.MaxTimeoutSeconds > 86400 {
 			return fmt.Errorf("template %q has invalid time limits", id)
+		}
+		if t.TerminationGracePeriodSeconds < 0 || t.TerminationGracePeriodSeconds > 30 {
+			return fmt.Errorf("template %q grace period must be 1–30 seconds (zero preserves the legacy 30-second default)", id)
 		}
 		if err := validateCommand(t.Command); err != nil {
 			return fmt.Errorf("template %q: %w", id, err)
@@ -221,6 +225,7 @@ func (c Config) Resolve(req model.CreateRequest) (model.Spec, error) {
 		return model.Spec{}, errors.New("timeout exceeds environment policy")
 	}
 	s := model.Spec{Template: req.Template, Image: t.Image, RuntimeClass: profile.RuntimeClass, Command: append([]string(nil), command...), Resources: t.Resources, TimeoutSeconds: timeout}
+	s.TerminationGracePeriodSeconds = t.TerminationGracePeriodSeconds
 	if c.RuntimeProfile != nil {
 		// Copy rather than aliasing mutable administrator configuration. Preserve
 		// the legacy nil representation so existing idempotency keys still match.

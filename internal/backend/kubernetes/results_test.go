@@ -102,8 +102,8 @@ func TestBoundedOutputRetainsNonoverlappingHeadAndActualTail(t *testing.T) {
 		if n > 0 {
 			body[n-1] = 'z'
 		}
-		head, tail, count, complete := boundedOutput(bytes.NewReader(body), captureScanBytes)
-		if count != int64(n) || !complete || len(head) > resultPartBytes || len(tail) > resultPartBytes {
+		head, tail, count, complete, err := boundedOutput(bytes.NewReader(body), captureScanBytes)
+		if err != nil || count != int64(n) || !complete || len(head) > resultPartBytes || len(tail) > resultPartBytes {
 			t.Fatal(n, count, complete)
 		}
 		if n <= 2*resultPartBytes && !bytes.Equal(append(append([]byte{}, head...), tail...), body) {
@@ -113,8 +113,8 @@ func TestBoundedOutputRetainsNonoverlappingHeadAndActualTail(t *testing.T) {
 			t.Fatal("did not retain final tail")
 		}
 	}
-	head, tail, count, complete := boundedOutput(bytes.NewReader([]byte("abcdef")), 3)
-	if string(head) != "abc" || len(tail) != 0 || count != 4 || complete {
+	head, tail, count, complete, err := boundedOutput(bytes.NewReader([]byte("abcdef")), 3)
+	if err != nil || string(head) != "abc" || len(tail) != 0 || count != 4 || complete {
 		t.Fatal("scan limit mislabeled complete", string(head), count, complete)
 	}
 	if output, clipped := validOutput(bytes.Repeat([]byte{255, 'a'}, resultPartBytes/2), false); len(output) > resultPartBytes || !utf8.ValidString(output) || !clipped {
@@ -129,7 +129,7 @@ func TestCaptureResultKeepsExitCodeAndLongOutputTail(t *testing.T) {
 	pod := ownedPod(job, "pod-1")
 	pod.Status = terminatedAgent(3, "Error", "")
 	body := "first line\n" + strings.Repeat("x", 4*resultPartBytes) + "\nlast traceback\n"
-	for _, status := range []int{200, 404, 503} {
+	for _, status := range []int{200, 400, 404, 503} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			switch r.URL.Path {
@@ -173,6 +173,42 @@ func TestCaptureResultKeepsExitCodeAndLongOutputTail(t *testing.T) {
 		if result.Status != "captured" || !result.OutputComplete || !result.OutputTruncated || !strings.HasPrefix(result.OutputHead, "first line\n") || !strings.HasSuffix(result.OutputTail, "last traceback\n") {
 			t.Fatal("lost head/tail")
 		}
+	}
+}
+
+func TestCaptureResultRetainsPartialOutputWhenLogReadFails(t *testing.T) {
+	b, _ := newTestBackend(t)
+	job, _ := b.Render(fixtureRun())
+	job.UID = "job-uid"
+	pod := ownedPod(job, "pod-1")
+	pod.Status = terminatedAgent(7, "Error", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/apis/batch/v1/namespaces/work/jobs/agentos-run-1":
+			_ = json.NewEncoder(w).Encode(job)
+		case "/api/v1/namespaces/work/pods":
+			_ = json.NewEncoder(w).Encode(corev1.PodList{Items: []corev1.Pod{*pod}})
+		case "/api/v1/namespaces/work/pods/pod-1/log":
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Content-Length", "100")
+			_, _ = io.WriteString(w, "partial output\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := clientset.NewForConfig(&rest.Config{Host: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err = New(client, "work", "gvisor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := b.CaptureResult(context.Background(), "run-1")
+	if err == nil || result.Status != "captured" || result.OutputHead != "partial output\n" || result.ExitCode == nil || *result.ExitCode != 7 || result.OutputComplete || !result.OutputTruncated {
+		t.Fatalf("stream failure lost partial result or became final: %+v %v", result, err)
 	}
 }
 

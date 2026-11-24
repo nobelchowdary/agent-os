@@ -16,12 +16,13 @@ import (
 // Controller has one owner per database. Kubernetes Jobs use deterministic IDs;
 // uncertain creates are retried without creating a second logical execution.
 type Controller struct {
-	Store           *store.Store
-	Backend         backend.Backend
-	Logger          *slog.Logger
-	StartupTimeout  time.Duration
-	ResultRetention time.Duration
-	SweepInterval   time.Duration
+	Store             *store.Store
+	Backend           backend.Backend
+	Logger            *slog.Logger
+	StartupTimeout    time.Duration
+	ResultRetention   time.Duration
+	ResultCaptureWait time.Duration
+	SweepInterval     time.Duration
 
 	statusMu    sync.RWMutex
 	status      Status
@@ -31,13 +32,16 @@ type Controller struct {
 }
 
 // Status describes the controller loop, not node isolation or workload health.
-// A successful pass means that every observed run was reconciled without an
-// operation error; a legitimate failed workload does not make the loop unhealthy.
+// A successful pass means every observed run reconciled without an operation
+// error. Per-run errors are diagnostic; they do not stop reads or cancellation.
 type Status struct {
 	Running                bool      `json:"running"`
 	LastCompletedAt        time.Time `json:"last_completed_at,omitzero"`
+	LastProgressAt         time.Time `json:"last_progress_at,omitzero"`
 	LastSuccessAt          time.Time `json:"last_success_at,omitzero"`
 	ConsecutiveFailures    uint64    `json:"consecutive_failures"`
+	RunErrors              int       `json:"run_errors"`
+	MaintenanceFailed      bool      `json:"maintenance_failed"`
 	OrphanJobs             int       `json:"orphan_jobs"`
 	TerminalCleanupPending int       `json:"terminal_cleanup_pending"`
 	LastSweepAt            time.Time `json:"last_sweep_at,omitzero"`
@@ -116,6 +120,7 @@ func (c *Controller) completed(ctx context.Context, err error) {
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()
 	c.status.LastCompletedAt = time.Now().UTC()
+	c.status.LastProgressAt = c.status.LastCompletedAt
 	// Shutting down is neither a failed pass nor evidence of recovery.
 	if ctx.Err() != nil {
 		return
@@ -128,6 +133,12 @@ func (c *Controller) completed(ctx context.Context, err error) {
 	c.status.ConsecutiveFailures = 0
 }
 
+func (c *Controller) progress() {
+	c.statusMu.Lock()
+	c.status.LastProgressAt = time.Now().UTC()
+	c.statusMu.Unlock()
+}
+
 func (c *Controller) Reconcile(ctx context.Context) (result error) {
 	defer func() { c.completed(ctx, result) }()
 	if err := ctx.Err(); err != nil {
@@ -137,6 +148,7 @@ func (c *Controller) Reconcile(ctx context.Context) (result error) {
 	if err != nil {
 		return &operationError{category: "active_runs_read_failed", cause: err}
 	}
+	c.progress()
 	// Prioritize cancellation and bound concurrent Kubernetes calls. An unhealthy
 	// tenant must not serialize every other run behind its request timeouts.
 	sort.SliceStable(runs, func(i, j int) bool { return runs[i].State == model.Cancelling && runs[j].State != model.Cancelling })
@@ -156,7 +168,9 @@ func (c *Controller) Reconcile(ctx context.Context) (result error) {
 				if ctx.Err() != nil {
 					return
 				}
-				if err := c.reconcileRun(ctx, r); err != nil && !errors.Is(err, store.ErrConflict) && !errors.Is(err, backend.ErrPending) {
+				err := c.reconcileRun(ctx, r)
+				c.progress()
+				if err != nil && !errors.Is(err, store.ErrConflict) && !errors.Is(err, backend.ErrPending) {
 					failure := &operationError{category: "run_reconciliation_failed", runID: r.ID, cause: err}
 					failuresMu.Lock()
 					failures = append(failures, failure)
@@ -169,8 +183,15 @@ func (c *Controller) Reconcile(ctx context.Context) (result error) {
 		}()
 	}
 	wg.Wait()
+	c.statusMu.Lock()
+	c.status.RunErrors = len(failures)
+	c.status.MaintenanceFailed = false
+	c.statusMu.Unlock()
 	if err := c.maintain(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		failures = append(failures, &operationError{category: "maintenance_failed", cause: err})
+		c.statusMu.Lock()
+		c.status.MaintenanceFailed = true
+		c.statusMu.Unlock()
 	}
 	if err := ctx.Err(); err != nil {
 		failures = append(failures, err)
@@ -249,7 +270,7 @@ func (c *Controller) reconcileRun(ctx context.Context, r model.Record) error {
 		// Persist a bounded snapshot before any deletion. A running process
 		// may not have a final exit code yet; logging failure must not prevent
 		// an authorized cancellation from stopping execution.
-		captureErr := c.captureResult(opctx, r, true)
+		captureErr := c.captureResult(opctx, r, true, time.Time{})
 		// Give stopping its own finite budget. A log-read timeout must not
 		// leave every cleanup attempt with an already expired context.
 		cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -318,7 +339,7 @@ func (c *Controller) observe(ctx context.Context, r model.Record, ob backend.Obs
 		code = model.DefaultReasonCode(ob.State)
 	}
 	if ob.State.Terminal() {
-		if err := c.captureResult(ctx, r, false); err != nil {
+		if err := c.captureResult(ctx, r, false, ob.FinishedAt); err != nil {
 			return err
 		}
 	}
@@ -339,7 +360,7 @@ func (c *Controller) startupTimeout() time.Duration {
 	return 5 * time.Minute
 }
 
-func (c *Controller) captureResult(ctx context.Context, r model.Record, cancelling bool) error {
+func (c *Controller) captureResult(ctx context.Context, r model.Record, cancelling bool, finishedAt time.Time) error {
 	if r.Result != nil {
 		return nil
 	}
@@ -349,7 +370,20 @@ func (c *Controller) captureResult(ctx context.Context, r model.Record, cancelli
 	} // Legacy embedded/test backends may not expose results.
 	result, err := capturer.CaptureResult(ctx, r.ID)
 	if err != nil {
-		if !cancelling && !errors.Is(err, backend.ErrNotFound) {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		// Use the Job's stable terminal timestamp across controller restarts.
+		// Older backends/Jobs without it use the last durable lifecycle change,
+		// never an in-memory first-observed clock that resets on restart.
+		if finishedAt.IsZero() || finishedAt.After(time.Now().UTC()) {
+			finishedAt = r.UpdatedAt
+		}
+		wait := c.ResultCaptureWait
+		if wait <= 0 {
+			wait = 15 * time.Second
+		}
+		if !cancelling && !errors.Is(err, backend.ErrNotFound) && time.Since(finishedAt) < wait {
 			return err
 		}
 		// Preserve an already observed exit status, but never expose a failed
@@ -446,7 +480,7 @@ func (c *Controller) maintain(ctx context.Context) error {
 		go func() {
 			defer wg.Done()
 			for r := range work {
-				err := c.captureResult(opctx, r, false)
+				err := c.captureResult(opctx, r, false, r.UpdatedAt)
 				if err == nil {
 					err = inventory.Cleanup(opctx, r)
 				}

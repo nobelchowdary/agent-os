@@ -3,6 +3,8 @@ package backend
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/nobelchowdary/agent-os/internal/model"
 )
 
@@ -16,6 +18,9 @@ type Observation struct {
 	State      model.State
 	Reason     string
 	ReasonCode model.ReasonCode
+	// FinishedAt is the terminal Job timestamp, when Kubernetes supplies one.
+	// A zero value means the controller must use its durable fallback clock.
+	FinishedAt time.Time
 }
 
 // ResultCapturer is an optional runtime capability. Output is untrusted data;

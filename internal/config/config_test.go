@@ -155,6 +155,39 @@ func TestEnvironmentPolicy(t *testing.T) {
 	}
 }
 
+func TestTerminationGraceBelongsToTemplateAndPreservesLegacySpec(t *testing.T) {
+	c, err := Load("../../config/example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := c.Templates["python"]
+	for _, seconds := range []int64{-1, 31} {
+		template.TerminationGracePeriodSeconds = seconds
+		c.Templates["python"] = template
+		if c.Validate() == nil {
+			t.Fatal("invalid grace accepted", seconds)
+		}
+	}
+	for _, seconds := range []int64{0, 1, 10, 30} {
+		template.TerminationGracePeriodSeconds = seconds
+		c.Templates["python"] = template
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		spec, err := c.Resolve(model.CreateRequest{Template: "python"})
+		if err != nil || spec.TerminationGracePeriodSeconds != seconds {
+			t.Fatal("template grace not resolved", spec, err)
+		}
+		encoded, err := json.Marshal(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "termination_grace_period_seconds") != (seconds != 0) {
+			t.Fatal("legacy grace omission or explicit policy lost", string(encoded))
+		}
+	}
+}
+
 func TestCredentialConfiguration(t *testing.T) {
 	c, err := Load("../../config/example.json")
 	if err != nil {

@@ -962,6 +962,12 @@
           },
           "timeout_seconds": {
             "type": "integer"
+          },
+          "termination_grace_period_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "description": "Administrator-owned termination grace persisted with the run. Omitted on legacy specifications, which retain the Kubernetes 30-second default."
           }
         },
         "required": [
@@ -1292,7 +1298,8 @@
           },
           "consecutive_failures": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Consecutive passes with operation errors; diagnostic only, not a readiness gate."
           },
           "orphan_jobs": {
             "type": "integer",
@@ -1306,6 +1313,20 @@
           "last_sweep_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "last_progress_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Latest bounded controller operation progress; readiness uses this heartbeat rather than per-run success."
+          },
+          "run_errors": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of run operation errors in the last completed pass; no run IDs or backend error details."
+          },
+          "maintenance_failed": {
+            "type": "boolean",
+            "description": "Last completed pass encountered an inventory, expiry or terminal-cleanup error."
           }
         },
         "required": [

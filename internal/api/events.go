@@ -268,7 +268,11 @@ func (s *Server) controllerHealthy() bool {
 }
 
 func healthyController(status controller.Status) bool {
-	return status.Running && !status.LastCompletedAt.IsZero() && time.Since(status.LastCompletedAt) <= 30*time.Second && status.ConsecutiveFailures == 0
+	progress := status.LastProgressAt
+	if progress.IsZero() {
+		progress = status.LastCompletedAt // Compatibility with embedded status providers.
+	}
+	return status.Running && !progress.IsZero() && time.Since(progress) <= 30*time.Second
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request, tenant string) {

@@ -595,7 +595,7 @@ func TestObserveUsesTerminalConditionsAndBoundsReasons(t *testing.T) {
 
 func ownedPod(job *batchv1.Job, name string) *corev1.Pod {
 	yes := true
-	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "work", UID: types.UID(name + "-uid"), Labels: ownedLabels("run-1"), OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: job.Name, UID: job.UID, Controller: &yes}}}}
+	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "work", UID: types.UID(name + "-uid"), Labels: ownedLabels("run-1"), Annotations: job.Spec.Template.DeepCopy().Annotations, OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: job.Name, UID: job.UID, Controller: &yes}}}, Spec: *job.Spec.Template.Spec.DeepCopy()}
 }
 
 func TestCancelUsesForegroundAndWaitsForJobAndPods(t *testing.T) {

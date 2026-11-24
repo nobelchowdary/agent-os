@@ -21,6 +21,7 @@ type resultsBackend struct {
 	captureErr            error
 	captureCalls          int
 	exitCode              int32
+	finishedAt            time.Time
 	cleanupErrAfterDelete bool
 	cleanupCalls          int
 }
@@ -30,10 +31,17 @@ func (b *resultsBackend) CaptureResult(context.Context, string) (model.Execution
 	defer b.resultMu.Unlock()
 	b.captureCalls++
 	if b.captureErr != nil {
-		return model.ExecutionResult{}, b.captureErr
+		exit := b.exitCode
+		return model.ExecutionResult{ExitCode: &exit}, b.captureErr
 	}
 	exit := b.exitCode
 	return model.ExecutionResult{ExitCode: &exit, OutputHead: "hello from task\n", OutputTail: "final traceback\n", OutputTruncated: true, OutputComplete: true, Status: "captured"}, nil
+}
+
+func (b *resultsBackend) Observe(ctx context.Context, id string) (backend.Observation, error) {
+	ob, err := b.fakeBackend.Observe(ctx, id)
+	ob.FinishedAt = b.finishedAt
+	return ob, err
 }
 
 func (b *resultsBackend) ListExecutions(context.Context) ([]backend.Execution, error) {
@@ -198,6 +206,68 @@ func TestConfiguredStartupWaitCanExpireBeforeDispatch(t *testing.T) {
 	tick(t, c)
 	if state(t, c, r) != model.Failed {
 		t.Fatal("expired startup did not finish after cleanup")
+	}
+}
+
+func TestPersistentLogFailureExpiresFromJobFinishAcrossControllerRestart(t *testing.T) {
+	for _, outcome := range []struct {
+		state model.State
+		code  int32
+	}{{model.Succeeded, 0}, {model.Failed, 3}} {
+		t.Run(string(outcome.state), func(t *testing.T) {
+			c, b, r := setup(t)
+			tick(t, c)
+			tick(t, c)
+			b.observed = outcome.state
+			runtime := &resultsBackend{fakeBackend: b, db: c.Store, captureErr: errors.New("kubelet never answers"), exitCode: outcome.code, finishedAt: time.Now().UTC()}
+			c.Backend = runtime
+			if err := c.Reconcile(context.Background()); err == nil {
+				t.Fatal("transient capture failure not reported")
+			}
+			if state(t, c, r) != model.Running || !b.jobs[r.ID] || c.Status().RunErrors != 1 {
+				t.Fatal("capture retry lost work or status")
+			}
+			// A replacement controller sees an old, unchanged Job timestamp. Its
+			// own start time cannot restart the result retry budget.
+			runtime.finishedAt = time.Now().Add(-20 * time.Second)
+			restarted := &Controller{Store: c.Store, Backend: runtime, Logger: c.Logger}
+			tick(t, restarted)
+			got, err := c.Store.Get(r.TenantID, r.ID)
+			if err != nil || got.State != outcome.state || got.Result == nil || got.Result.Status != "unavailable" || got.Result.ExitCode == nil || *got.Result.ExitCode != outcome.code || got.Result.OutputComplete || b.jobs[r.ID] {
+				t.Fatal("permanent capture failure held reservation or lost observed exit", got, err)
+			}
+			if _, _, err := c.Store.Admit(model.Record{ID: "replacement", TenantID: r.TenantID}, "", 1, 1); err != nil {
+				t.Fatal("finished run retained its quota", err)
+			}
+			before := len(got.Events)
+			runtime.captureErr = nil
+			// Neither a later readable log nor a repeated terminal observation
+			// may overwrite the first durable result/outcome.
+			if err := restarted.observe(context.Background(), got, backend.Observation{State: outcome.state}); err != nil {
+				t.Fatal(err)
+			}
+			again, _ := c.Store.Get(r.TenantID, r.ID)
+			if len(again.Events) != before || again.Result.Status != "unavailable" || b.creates != 1 {
+				t.Fatal("terminal result changed or work replayed")
+			}
+		})
+	}
+}
+
+func TestMissingOrFutureFinishTimestampUsesDurableLifecycleAge(t *testing.T) {
+	for _, finishedAt := range []time.Time{{}, time.Now().Add(time.Hour)} {
+		c, b, r := setup(t)
+		tick(t, c)
+		tick(t, c)
+		r, _ = c.Store.Get(r.TenantID, r.ID)
+		r.UpdatedAt = time.Now().Add(-time.Minute)
+		c.Backend = &resultsBackend{fakeBackend: b, db: c.Store, captureErr: errors.New("permanent capture error")}
+		if err := c.observe(context.Background(), r, backend.Observation{State: model.Succeeded, FinishedAt: finishedAt}); err != nil {
+			t.Fatal(err)
+		}
+		if state(t, c, r) != model.Succeeded {
+			t.Fatal("missing timestamp restarted retry budget")
+		}
 	}
 }
 

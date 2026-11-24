@@ -265,6 +265,9 @@ func (b *Backend) Render(run model.Record) (*batchv1.Job, error) {
 	if s.Resources.CPUMilli <= 0 || s.Resources.MemoryMiB <= 0 || s.Resources.DiskMiB < 2 || s.TimeoutSeconds <= 0 {
 		return nil, errors.New("positive CPU, memory, disk (at least 2 MiB) and timeout bounds are required")
 	}
+	if s.TerminationGracePeriodSeconds < 0 || s.TerminationGracePeriodSeconds > 30 {
+		return nil, errors.New("termination grace must be between 1 and 30 seconds, or omitted for legacy runs")
+	}
 	if b.profile.Kind == "aws-nitro-isolated" && s.Resources.DiskMiB >= s.Resources.MemoryMiB {
 		return nil, errors.New("Nitro memory-backed scratch must be smaller than the workload memory limit")
 	}
@@ -307,6 +310,10 @@ func (b *Backend) Render(run model.Record) (*batchv1.Job, error) {
 				},
 			},
 		},
+	}
+	if s.TerminationGracePeriodSeconds != 0 {
+		grace := s.TerminationGracePeriodSeconds
+		job.Spec.Template.Spec.TerminationGracePeriodSeconds = &grace
 	}
 	if b.profile.Kind == "aws-nitro-isolated" {
 		// AWS isolated mode permits metadata and Pod Identity by default. Remove
@@ -433,6 +440,9 @@ func sameExecution(got, want *batchv1.Job) bool {
 		return false
 	}
 	p, q := g.Template.Spec, w.Template.Spec
+	if !sameGrace(p.TerminationGracePeriodSeconds, q.TerminationGracePeriodSeconds) {
+		return false
+	}
 	if p.HostNetwork || p.HostPID || p.HostIPC || p.NodeName != "" || len(p.InitContainers) != 0 || len(p.EphemeralContainers) != 0 || len(p.ImagePullSecrets) != 0 || len(p.HostAliases) != 0 {
 		return false
 	}
@@ -468,7 +478,27 @@ func sameExecution(got, want *batchv1.Job) bool {
 			return false
 		}
 	}
-	return true
+	// Compare every remaining PodSpec field too. An unlisted API field must
+	// not become a path for admission to inject a different execution policy.
+	normalizedGot, normalizedWant := normalizedPodSpec(&p), normalizedPodSpec(&q)
+	if w.Template.Annotations[NitroNetworkAnnotation] == "true" && len(p.Overhead) != 0 {
+		normalizedWant.Overhead = p.Overhead.DeepCopy()
+	}
+	return apiequality.Semantic.DeepEqual(normalizedGot, normalizedWant)
+}
+
+func effectiveGrace(grace *int64) int64 {
+	if grace == nil {
+		return corev1.DefaultTerminationGracePeriodSeconds
+	}
+	return *grace
+}
+
+func sameGrace(actual, expected *int64) bool {
+	if expected == nil {
+		return actual == nil || *actual == corev1.DefaultTerminationGracePeriodSeconds
+	}
+	return actual != nil && *actual == *expected
 }
 
 func (b *Backend) ownedJob(ctx context.Context, id string) (*batchv1.Job, error) {
@@ -518,34 +548,41 @@ func (b *Backend) Observe(ctx context.Context, id string) (backend.Observation, 
 	if complete && (failed || failureTarget) {
 		return backend.Observation{}, errors.New("execution has contradictory Job outcome conditions")
 	}
+	pods, podErr := b.executionPods(ctx, id, job)
+	if errors.Is(podErr, errPodSpecChanged) {
+		return backend.Observation{State: model.Cancelling, Reason: "execution Pod differs from the approved Job template", ReasonCode: model.ReasonInfraFailure}, nil
+	}
 	if complete {
-		return backend.Observation{State: model.Succeeded, Reason: "Kubernetes Job completed", ReasonCode: model.ReasonCompleted}, nil
+		return backend.Observation{State: model.Succeeded, Reason: "Kubernetes Job completed", ReasonCode: model.ReasonCompleted, FinishedAt: terminalJobFinishedAt(job, batchv1.JobComplete)}, nil
+	}
+	var finishedAt time.Time
+	if failed {
+		finishedAt = terminalJobFinishedAt(job, batchv1.JobFailed)
 	}
 	if deadline {
 		state := model.Cancelling
 		if failed {
 			state = model.Failed
 		}
-		return backend.Observation{State: state, Reason: "Kubernetes execution deadline exceeded", ReasonCode: model.ReasonDeadlineExceeded}, nil
+		return backend.Observation{State: state, Reason: "Kubernetes execution deadline exceeded", ReasonCode: model.ReasonDeadlineExceeded, FinishedAt: finishedAt}, nil
 	}
 	if !failed && job.DeletionTimestamp != nil {
 		return backend.Observation{State: model.Cancelling, Reason: "execution deletion requested", ReasonCode: model.ReasonInfraFailure}, nil
 	}
-	pods, err := b.runPods(ctx, id, job.UID)
-	if err != nil {
+	if podErr != nil {
 		if failed {
 			// The terminal Job remains authoritative if optional Pod evidence is
 			// unavailable. Do not guess a specific cause or adopt foreign Pods.
-			return backend.Observation{State: model.Failed, Reason: "Kubernetes Job failed", ReasonCode: model.ReasonUnknown}, nil
+			return backend.Observation{State: model.Failed, Reason: "Kubernetes Job failed", ReasonCode: model.ReasonUnknown, FinishedAt: finishedAt}, nil
 		}
-		return backend.Observation{}, err
+		return backend.Observation{}, podErr
 	}
 	code, imagePullWaiting := podFailureCode(pods)
 	if failed {
 		if code == "" {
 			code = model.ReasonUnknown
 		}
-		return backend.Observation{State: model.Failed, Reason: "Kubernetes Job failed", ReasonCode: code}, nil
+		return backend.Observation{State: model.Failed, Reason: "Kubernetes Job failed", ReasonCode: code, FinishedAt: finishedAt}, nil
 	}
 	if failureTarget || code != "" {
 		if code == "" {
@@ -577,6 +614,26 @@ func (b *Backend) Observe(ctx context.Context, id string) (backend.Observation, 
 	return backend.Observation{State: model.Starting}, nil
 }
 
+// Kubernetes records CompletionTime for successful Jobs; failed Jobs instead
+// supply the terminal condition transition. FailureTarget and Pod timestamps
+// do not establish Job termination. Choose the earliest matching transition if
+// duplicate terminal conditions are supplied, so retries cannot extend capture.
+func terminalJobFinishedAt(job *batchv1.Job, terminal batchv1.JobConditionType) time.Time {
+	if terminal == batchv1.JobComplete && job.Status.CompletionTime != nil && !job.Status.CompletionTime.IsZero() {
+		return job.Status.CompletionTime.Time.UTC()
+	}
+	var finishedAt time.Time
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == terminal && condition.Status == corev1.ConditionTrue && !condition.LastTransitionTime.IsZero() {
+			stamp := condition.LastTransitionTime.Time.UTC()
+			if finishedAt.IsZero() || stamp.Before(finishedAt) {
+				finishedAt = stamp
+			}
+		}
+	}
+	return finishedAt
+}
+
 // podFailureCode uses structured status from already ownership-checked Pods,
 // never termination messages or logs. Missing or conflicting causes stay
 // unknown. Only the declared agent container's current status is considered.
@@ -585,10 +642,26 @@ func podFailureCode(pods []corev1.Pod) (model.ReasonCode, bool) {
 	imagePullWaiting := false
 	for _, pod := range pods {
 		var code model.ReasonCode
+		started, invalidAgent := false, false
+		agentStatuses := 0
 		for _, container := range pod.Status.ContainerStatuses {
 			if container.Name != "agent" {
 				continue
 			}
+			agentStatuses++
+			states := 0
+			if container.State.Running != nil {
+				states++
+				started = started || !container.State.Running.StartedAt.IsZero()
+			}
+			if container.State.Terminated != nil {
+				states++
+				started = started || !container.State.Terminated.StartedAt.IsZero()
+			}
+			if container.State.Waiting != nil {
+				states++
+			}
+			invalidAgent = invalidAgent || states > 1
 			if terminated := container.State.Terminated; terminated != nil && terminated.ExitCode != 0 {
 				code = model.ReasonTaskError
 				if terminated.Reason == "OOMKilled" {
@@ -604,7 +677,23 @@ func podFailureCode(pods []corev1.Pod) (model.ReasonCode, bool) {
 				}
 			}
 		}
-		if platformDisrupted(pod) {
+		disruption, conflictingDisruption := disruptionTarget(pod)
+		if invalidAgent || agentStatuses > 1 || conflictingDisruption {
+			code = model.ReasonUnknown
+		} else if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" {
+			// v1.37 kubelet storage-limit evictions set Evicted without a
+			// DisruptionTarget; pressure evictions set a true target. Admission
+			// rejection can also say Evicted, so require current start evidence
+			// before attributing the unmarked eviction to the workload. Kubelet
+			// can synthesize a terminated status with no process start timestamp.
+			if code == model.ReasonOOMKilled || code == model.ReasonImagePullFailed {
+				code = model.ReasonUnknown
+			} else if disruption || !started {
+				code = model.ReasonInfraFailure
+			} else {
+				code = model.ReasonEvicted
+			}
+		} else if platformDisrupted(pod) {
 			if code == model.ReasonOOMKilled || code == model.ReasonImagePullFailed {
 				// Two specific competing facts do not establish their ordering.
 				code = model.ReasonUnknown
@@ -613,11 +702,6 @@ func podFailureCode(pods []corev1.Pod) (model.ReasonCode, bool) {
 				// task-error attribution. This classification never enables retry.
 				code = model.ReasonInfraFailure
 			}
-		} else if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" && code != model.ReasonOOMKilled {
-			// Both platform pressure and own-limit eviction use Evicted.
-			// Missing DisruptionTarget is not proof of an own-limit violation;
-			// v1.37 exposes that distinction here only in free-form messages.
-			code = model.ReasonUnknown
 		} else if code == "" && pod.Status.Phase == corev1.PodFailed {
 			code = model.ReasonUnknown
 		}
@@ -630,6 +714,22 @@ func podFailureCode(pods []corev1.Pod) (model.ReasonCode, bool) {
 		}
 	}
 	return result, imagePullWaiting
+}
+
+func disruptionTarget(pod corev1.Pod) (target, conflicting bool) {
+	var previous *corev1.PodCondition
+	for i := range pod.Status.Conditions {
+		condition := &pod.Status.Conditions[i]
+		if condition.Type != corev1.DisruptionTarget {
+			continue
+		}
+		if previous != nil && (condition.Status != previous.Status || condition.Reason != previous.Reason) {
+			conflicting = true
+		}
+		target = target || condition.Status == corev1.ConditionTrue
+		previous = condition
+	}
+	return target, conflicting
 }
 
 func platformDisrupted(pod corev1.Pod) bool {
@@ -751,7 +851,7 @@ func (b *Backend) Logs(ctx context.Context, id string, limit int64) (string, err
 	if err != nil {
 		return "", err
 	}
-	pods, err := b.runPods(ctx, id, job.UID)
+	pods, err := b.executionPods(ctx, id, job)
 	if err != nil {
 		return "", err
 	}

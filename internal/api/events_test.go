@@ -272,7 +272,7 @@ func TestStatusIsTenantScopedAndControllerAffectsReadiness(t *testing.T) {
 	}
 	snapshot := controller.Status{}
 	s.ControllerStatus = func() controller.Status { return snapshot }
-	for _, sample := range []controller.Status{{}, {Running: true}, {Running: true, LastCompletedAt: time.Now().Add(-time.Minute)}, {Running: true, LastCompletedAt: time.Now(), ConsecutiveFailures: 1}} {
+	for _, sample := range []controller.Status{{}, {Running: true}, {Running: true, LastCompletedAt: time.Now().Add(-time.Minute)}} {
 		snapshot = sample
 		w := request(s, "GET", "/readyz", "", "", "")
 		if w.Code != 503 || !strings.Contains(w.Body.String(), "controller") {
@@ -282,6 +282,39 @@ func TestStatusIsTenantScopedAndControllerAffectsReadiness(t *testing.T) {
 	snapshot = controller.Status{Running: true, LastCompletedAt: time.Now(), LastSuccessAt: time.Now()}
 	if !s.controllerHealthy() {
 		t.Fatal("fresh successful controller is unhealthy")
+	}
+}
+
+type readyBackend struct{ unavailable }
+
+func (readyBackend) Ready(context.Context) error { return nil }
+
+func TestRunErrorsDoNotRemoveReadsOrCancellationFromReadyService(t *testing.T) {
+	s := testServer(t)
+	s.Backend = readyBackend{}
+	run := admitEventRun(t, s, strings.Repeat("a", 32), "alice")
+	s.ControllerStatus = func() controller.Status {
+		return controller.Status{Running: true, LastCompletedAt: time.Now().Add(-time.Minute), LastProgressAt: time.Now(), ConsecutiveFailures: 100, RunErrors: 1, MaintenanceFailed: true}
+	}
+	if w := request(s, "GET", "/readyz", "", "", ""); w.Code != 200 {
+		t.Fatalf("per-run failure removed the API from service: %d %s", w.Code, w.Body.String())
+	}
+	token := strings.Repeat("a", 32)
+	for _, path := range []string{"/v1/status", "/v1/runs/" + run.ID} {
+		if w := request(s, "GET", path, token, "", ""); w.Code != 200 {
+			t.Fatal(path, w.Code)
+		}
+	}
+	if w := request(s, "POST", "/v1/runs/"+run.ID+"/cancel", token, "", ""); w.Code != 202 {
+		t.Fatal("per-run failure prevented cancellation", w.Code, w.Body.String())
+	}
+	// A stopped/stalled loop, broken store or missing sandbox prerequisites
+	// still fails readiness; only per-run operation failures are isolated.
+	s.ControllerStatus = func() controller.Status {
+		return controller.Status{Running: true, LastProgressAt: time.Now().Add(-time.Minute)}
+	}
+	if w := request(s, "GET", "/readyz", "", "", ""); w.Code != 503 {
+		t.Fatal("stalled controller was ready", w.Code)
 	}
 }
 
