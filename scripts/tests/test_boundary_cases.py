@@ -26,6 +26,7 @@ def admitted_pod():
 class FakeCluster:
     def __init__(self):
         self.applied, self.commands, self.submitted = [], [], []
+        self.finished_states = []
         self.worker_nodes = {'different-worker-a', 'different-worker-b'}
         self.pid_limit = 128
         self.pod = admitted_pod()
@@ -65,9 +66,11 @@ class FakeCluster:
     def running_pod(self, run): return self.pod
 
     def finish(self, run, state, timeout):
-        value = self.restricted if run['id'] == 1 else {'attempt_limit': boundary.MAX_CHILDREN,
+        self.finished_states.append((run['id'], state))
+        value = self.restricted if run['id'] == 1 else {'stage': 'complete', 'attempt_limit': boundary.MAX_CHILDREN,
             'spawned': 10, 'children_reaped': 10, 'resource_denied': True}
-        return {'result': {'output_head': boundary.PREFIX + json.dumps(value) + '\n'}}
+        return {'state': 'succeeded', 'reason_code': 'completed',
+                'result': {'exit_code': 0, 'output_head': boundary.PREFIX + json.dumps(value) + '\n'}}
 
 
 class BoundaryTests(unittest.TestCase):
@@ -118,6 +121,8 @@ class BoundaryTests(unittest.TestCase):
         self.assertLessEqual(boundary.MAX_CHILDREN, 128)
         self.assertIn('resource.RLIMIT_AS', code)
         self.assertIn('signal.alarm(15)', code)
+        self.assertLess(code.index('"stage": "fork_progress", "spawned": 0'), code.index('os.fork()'))
+        self.assertIn('len(children) % 8 == 0', code)
         attempt = next(node for node in ast.walk(tree) if isinstance(node, ast.For) and isinstance(node.iter, ast.Call)
                        and isinstance(node.iter.func, ast.Name) and node.iter.func.id == 'range')
         self.assertEqual(ast.literal_eval(attempt.iter.args[0]), boundary.MAX_CHILDREN)
@@ -139,6 +144,7 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(result['host_escape_resistance'], 'not_qualified')
         self.assertEqual(result['guest_pid_ceiling'], 'not_qualified')
         self.assertEqual(result['bounded_process_exercise']['qualification'], 'exercise_only')
+        self.assertIn((2, None), cluster.finished_states)
         self.assertEqual(cluster.commands[-1][:2], ('delete', 'namespace'))
         fixtures = [item for item in cluster.applied if item['kind'] == 'Pod']
         self.assertTrue(all(item['spec']['runtimeClassName'] == 'gvisor' for item in fixtures))
@@ -209,6 +215,67 @@ class BoundaryTests(unittest.TestCase):
         for output in ('{}', boundary.PREFIX + 'malformed', boundary.PREFIX + '[]'):
             with self.subTest(output=output), self.assertRaises(boundary.BoundaryFailure):
                 boundary.result_from_text(output)
+
+    def test_process_diagnostics_export_only_valid_bounded_progress_and_fixed_flags(self):
+        secret = 'credential-value-must-never-escape'
+        lines = [boundary.PREFIX + json.dumps({'stage': 'fork_progress', 'spawned': 0}),
+                 boundary.PREFIX + json.dumps({'stage': 'fork_progress', 'spawned': 8, 'extra': secret}),
+                 boundary.PREFIX + json.dumps({'stage': 'fork_progress', 'spawned': 65}),
+                 boundary.PREFIX + json.dumps({'stage': secret, 'spawned': 16}),
+                 boundary.PREFIX + json.dumps({'stage': 'fork_progress', 'spawned': True}),
+                 boundary.PREFIX + 'malformed',
+                 'Traceback (most recent call last): ' + secret,
+                 'Resource temporarily unavailable; Cannot allocate memory; MemoryError; TimeoutError; fatal error:']
+        record = {'state': 'failed', 'reason_code': 'task_error',
+                  'result': {'exit_code': 128, 'output_head': '\n'.join(lines), 'output_tail': secret}}
+        summary = boundary.process_diagnostics(record)
+        self.assertEqual(summary['last_progress_spawned'], 8)
+        self.assertEqual(summary['last_progress_stage'], 'fork_progress')
+        self.assertEqual(summary['exit_code'], 128)
+        self.assertTrue(summary['error_markers']['resource_temporarily_unavailable'])
+        self.assertTrue(summary['error_markers']['cannot_allocate_memory'])
+        self.assertTrue(summary['error_markers']['traceback'])
+        self.assertTrue(summary['error_markers']['memory_error'])
+        self.assertTrue(summary['error_markers']['timeout'])
+        self.assertFalse(summary['error_markers']['failed_to_create_os_thread'])
+        self.assertNotIn(secret, json.dumps(summary))
+        self.assertNotIn('output_head', summary)
+        invalid = boundary.process_diagnostics({'state': secret, 'reason_code': secret,
+            'result': {'exit_code': True, 'output_head': boundary.PREFIX + '[]'}})
+        self.assertEqual(invalid['state'], 'unrecognized')
+        self.assertEqual(invalid['reason_code'], 'unrecognized')
+        self.assertIsNone(invalid['exit_code'])
+        self.assertIsNone(invalid['last_progress_spawned'])
+
+    def test_unexpected_exit_stays_failed_and_preserves_only_safe_earlier_evidence(self):
+        cluster = FakeCluster()
+        original = cluster.finish
+        secret = 'private-workload-text-must-not-escape'
+        def finish(run, state, timeout):
+            if run['id'] != 2:
+                return original(run, state, timeout)
+            self.assertIsNone(state)
+            return {'state': 'failed', 'reason_code': 'task_error', 'result': {'exit_code': 128,
+                'output_head': boundary.PREFIX + json.dumps({'stage': 'fork_progress', 'spawned': 8, 'secret': secret})
+                               + '\nResource temporarily unavailable ' + secret}}
+        with patch.object(cluster, 'finish', side_effect=finish), patch.dict(boundary.os.environ, {}, clear=True), self.assertRaisesRegex(
+                boundary.BoundaryFailure, 'unexpected_bounded_process_outcome') as raised:
+            boundary.boundary_checks(cluster)
+        evidence = raised.exception.evidence
+        self.assertEqual(evidence['network']['controlled_peer']['qualification'], 'measured_denial')
+        self.assertTrue(evidence['admitted_pod_checks']['required_runtime'])
+        self.assertTrue(evidence['process_and_filesystem']['root_mount_read_only'])
+        self.assertEqual(evidence['host_escape_resistance'], 'not_qualified')
+        process = evidence['bounded_process_exercise']
+        self.assertEqual(process['qualification'], 'not_qualified')
+        self.assertEqual(process['fixture']['state'], 'failed')
+        self.assertEqual(process['fixture']['reason_code'], 'task_error')
+        self.assertEqual(process['fixture']['exit_code'], 128)
+        self.assertEqual(process['fixture']['last_progress_spawned'], 8)
+        self.assertTrue(process['fixture']['error_markers']['resource_temporarily_unavailable'])
+        self.assertNotIn(secret, json.dumps(evidence))
+        self.assertEqual(len(cluster.submitted), 2)  # No followup success can hide this failure.
+        self.assertEqual(cluster.commands[-1][:2], ('delete', 'namespace'))
 
 
 if __name__ == '__main__':

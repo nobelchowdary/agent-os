@@ -17,7 +17,9 @@ CONTROL_LABEL = 'agentos.dev/boundary-control'
 
 
 class BoundaryFailure(RuntimeError):
-    pass
+    def __init__(self, category, evidence=None):
+        super().__init__(category)
+        self.evidence = evidence
 
 
 def require(condition, category):
@@ -89,7 +91,8 @@ result["process_and_filesystem"] = checks
 def fork_code():
     return '''import errno,json,os,resource,signal,time
 children = []
-result = {"attempt_limit": __LIMIT__, "spawned": 0, "resource_denied": False, "children_reaped": 0}
+result = {"stage": "complete", "attempt_limit": __LIMIT__, "spawned": 0, "resource_denied": False, "children_reaped": 0}
+print(PREFIX+json.dumps({"stage": "fork_progress", "spawned": 0}), flush=True)
 resource.setrlimit(resource.RLIMIT_AS, (128*1024*1024, 128*1024*1024))
 def deadline(*unused):
     raise TimeoutError("bounded_process_deadline")
@@ -109,6 +112,8 @@ try:
             time.sleep(20)
             os._exit(0)
         children.append(child)
+        if len(children) % 8 == 0:
+            print(PREFIX+json.dumps({"stage": "fork_progress", "spawned": len(children)}), flush=True)
     result["spawned"] = len(children)
 finally:
     signal.alarm(0)
@@ -128,6 +133,44 @@ def result_from_output(value):
     attachment = value.get('result', {})
     output = attachment.get('output_head', '') + '\n' + attachment.get('output_tail', '')
     return result_from_text(output)
+
+
+def process_diagnostics(record):
+    """Only enum metadata, bounded numeric progress and fixed error flags escape."""
+    attachment = record.get('result', {})
+    parts = [attachment.get(field, '') for field in ('output_head', 'output_tail')]
+    output = '\n'.join(part[:32768] for part in parts if isinstance(part, str))
+    lower = output.lower()
+    markers = {'resource_temporarily_unavailable': ('resource temporarily unavailable',),
+               'cannot_allocate_memory': ('cannot allocate memory',),
+               'traceback': ('traceback (most recent call last)',),
+               'timeout': ('timeouterror', 'bounded_process_deadline'),
+               'memory_error': ('memoryerror',),
+               'failed_to_create_os_thread': ('failed to create new os thread',),
+               'runtime_fatal': ('fatal error:',)}
+    state = record.get('state')
+    reason = record.get('reason_code')
+    known_reasons = {'completed', 'task_error', 'deadline_exceeded', 'cancelled', 'oom_killed', 'evicted',
+                     'image_pull_failed', 'policy_denied', 'budget_exceeded', 'infra_failure', 'unknown'}
+    exit_code = attachment.get('exit_code')
+    summary = {'state': state if state in ('succeeded', 'failed', 'cancelled') else 'unrecognized',
+               'reason_code': reason if isinstance(reason, str) and reason in known_reasons else 'unrecognized',
+               'exit_code': exit_code if type(exit_code) is int and -2147483648 <= exit_code <= 2147483647 else None,
+               'last_progress_spawned': None, 'last_progress_stage': None,
+               'error_markers': {name: any(marker in lower for marker in values) for name, values in markers.items()}}
+    for line in output.splitlines():
+        if not line.startswith(PREFIX):
+            continue
+        try:
+            value = json.loads(line[len(PREFIX):])
+        except ValueError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        stage, spawned = value.get('stage'), value.get('spawned')
+        if stage in ('fork_progress', 'complete') and type(spawned) is int and 0 <= spawned <= MAX_CHILDREN:
+            summary['last_progress_spawned'], summary['last_progress_stage'] = spawned, stage
+    return summary
 
 
 def result_from_text(output):
@@ -206,15 +249,27 @@ def process_exercise(cluster):
         return {'qualification': 'not_qualified', 'reason': 'node_pid_prerequisite_unavailable',
                 'required_max_node_pod_pids_limit': 128}
     fork = cluster.submit(fork_code(), 'boundary-process-' + secrets.token_hex(8), timeout=45)
-    result = result_from_output(cluster.finish(fork, 'succeeded', timeout=120))
-    require(type(result.get('spawned')) is int and 0 < result['spawned'] <= MAX_CHILDREN
-            and result.get('children_reaped') == result['spawned'], 'bounded_process_cleanup_failed')
+    done = cluster.finish(fork, state=None, timeout=120)
+    diagnostics = {'qualification': 'not_qualified', 'node_pid_configuration_readback': True,
+                   'fixture': process_diagnostics(done)}
+    exit_code = done.get('result', {}).get('exit_code')
+    if done.get('state') != 'succeeded' or type(exit_code) is not int or exit_code != 0:
+        raise BoundaryFailure('unexpected_bounded_process_outcome', evidence=diagnostics)
+    try:
+        result = result_from_output(done)
+        require(result.get('stage') == 'complete' and result.get('attempt_limit') == MAX_CHILDREN
+                and type(result.get('resource_denied')) is bool
+                and type(result.get('spawned')) is int and 0 < result['spawned'] <= MAX_CHILDREN
+                and type(result.get('children_reaped')) is int and result['children_reaped'] == result['spawned'],
+                'bounded_process_cleanup_failed')
+    except BoundaryFailure as failure:
+        raise BoundaryFailure(str(failure), evidence=diagnostics) from None
     cluster.kubectl('wait', '--for=condition=Ready', 'nodes', '--all', '--timeout=60s')
     healthy = cluster.submit('print("boundary-health-after-process-exercise", flush=True)',
                              'boundary-health-' + secrets.token_hex(8), timeout=30)
     cluster.finish(healthy, 'succeeded', timeout=120)
-    return dict(result, qualification='exercise_only', node_and_followup_workload_healthy=True,
-                node_pid_configuration_readback=True)
+    return dict({field: result[field] for field in ('stage', 'attempt_limit', 'spawned', 'children_reaped', 'resource_denied')},
+                qualification='exercise_only', node_and_followup_workload_healthy=True, node_pid_configuration_readback=True)
 
 
 def boundary_checks(cluster):
@@ -285,11 +340,16 @@ def boundary_checks(cluster):
         process = observed.get('process_and_filesystem', {})
         expected = {'uid_nonzero', 'service_account_token_absent', 'root_write_denied', 'root_mount_read_only', 'pid_one_is_python'}
         require(set(process) == expected and all(value is True for value in process.values()), 'boundary_process_or_filesystem_check_failed')
-        return {'qualification': 'partial', 'network': network, 'control_node_count': len(controls), 'admitted_pod_checks': admitted,
-                'process_and_filesystem': process, 'bounded_process_exercise': process_exercise(cluster),
+        evidence = {'qualification': 'partial', 'network': network, 'control_node_count': len(controls), 'admitted_pod_checks': admitted,
+                'process_and_filesystem': process,
                 'host_escape_resistance': 'not_qualified', 'guest_pid_ceiling': 'not_qualified',
                 'limits': ['No controlled host marker or escape exploit is exercised.',
                            'A bounded fork loop and node PID configuration do not establish a guest PID ceiling.',
                            'Network results apply only to the named paths and observed control windows.']}
+        try:
+            evidence['bounded_process_exercise'] = process_exercise(cluster)
+        except BoundaryFailure as failure:
+            raise BoundaryFailure(str(failure), evidence=dict(evidence, bounded_process_exercise=failure.evidence)) from None
+        return evidence
     finally:
         cluster.kubectl('delete', 'namespace', namespace, '--wait=true', '--timeout=60s', timeout=90)

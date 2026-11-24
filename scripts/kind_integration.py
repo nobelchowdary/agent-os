@@ -622,10 +622,12 @@ def run_campaign(cluster, sequential, crash_submits, only_case='all', load_sizes
                 observation = operation()
                 cluster.drain()
             except Exception as failure:
+                safe_category = isinstance(failure, CheckFailed) or type(failure).__name__ == 'BoundaryFailure'
                 failed = {'case': name, 'status': 'failed', 'seconds': round(time.monotonic() - start, 3),
-                          'failure': str(failure) if isinstance(failure, CheckFailed) else type(failure).__name__}
-                if isinstance(failure, CheckFailed) and failure.evidence is not None:
-                    failed['observations'] = failure.evidence
+                          'failure': str(failure) if safe_category else type(failure).__name__}
+                evidence = getattr(failure, 'evidence', None) if safe_category else None
+                if isinstance(evidence, dict):
+                    failed['observations'] = evidence
                 results.append(failed)
                 raise
             result = {'case': name, 'status': 'passed', 'seconds': round(time.monotonic() - start, 3)}
