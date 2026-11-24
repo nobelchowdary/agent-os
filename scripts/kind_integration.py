@@ -303,11 +303,42 @@ class ObjectWatch:
         self.thread.join(timeout=10)
 
 
-def run_campaign(cluster, sequential, crash_submits):
+def cancel_ignoring_term(cluster):
+    run = cluster.submit("import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ignoring-term',flush=True); time.sleep(180)", 'cancel-ignore-term', timeout=240)
+    pod = cluster.running_pod(run)
+    # Running only proves the container started, not that Python installed its
+    # handler. Observe the line emitted after signal.signal before stopping it.
+    eventually(lambda: cluster.request('GET', '/v1/runs/' + run['id'] + '/logs', retry=True),
+               lambda value: 'ignoring-term' in value.get('logs', ''), timeout=30,
+               category='sigterm_handler_not_ready')
+    started = time.monotonic()
+    cluster.request('POST', '/v1/runs/' + run['id'] + '/cancel', retry=True)
+    deletion_grace = set()
+    end = time.monotonic() + 120
+    while time.monotonic() < end:
+        current = cluster.get(run)
+        pods = cluster.pods(run)
+        for value in pods:
+            grace = value.get('metadata', {}).get('deletionGracePeriodSeconds')
+            if grace is not None:
+                deletion_grace.add(grace)
+        if current['state'] == 'cancelled':
+            require(not pods, 'cancelled_before_pod_disappeared')
+            return {'handler_ready': True,
+                    'configured_grace_seconds': pod.get('spec', {}).get('terminationGracePeriodSeconds'),
+                    'observed_delete_grace_seconds': sorted(deletion_grace),
+                    'stop_seconds': round(time.monotonic() - started, 3)}
+        time.sleep(.2)
+    raise CheckFailed('cancellation_did_not_finish')
+
+
+def run_campaign(cluster, sequential, crash_submits, only_case='all'):
     results = []
     watchers = [ObjectWatch(cluster, kind) for kind in ('jobs', 'pods')]
     try:
         def case(name, operation):
+            if only_case != 'all' and name not in ('actual_gvisor_canary', only_case):
+                return
             start = time.monotonic()
             operation()
             cluster.drain()
@@ -407,18 +438,7 @@ def run_campaign(cluster, sequential, crash_submits):
         case('deadline_with_api_scaled_zero', offline_deadline)
 
         def cancelled():
-            run = cluster.submit("import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ignoring-term',flush=True); time.sleep(180)", 'cancel-ignore-term', timeout=240)
-            cluster.running_pod(run)
-            cluster.request('POST', '/v1/runs/' + run['id'] + '/cancel', retry=True)
-            end = time.monotonic() + 120
-            while time.monotonic() < end:
-                current = cluster.get(run)
-                pods = cluster.pods(run)
-                if current['state'] == 'cancelled':
-                    require(not pods, 'cancelled_before_pod_disappeared')
-                    return
-                time.sleep(.2)
-            raise CheckFailed('cancellation_did_not_finish')
+            results.append({'case': 'cancellation_observation', 'status': 'observed', **cancel_ignoring_term(cluster)})
         case('cancel_ignores_sigterm_until_gone', cancelled)
 
         def delete_job():
@@ -496,6 +516,7 @@ def main():
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--sequential-runs', type=int, default=200)
     parser.add_argument('--crash-submits', type=int, default=500)
+    parser.add_argument('--only-case', choices=('all', 'cancel_ignores_sigterm_until_gone'), default='all')
     args = parser.parse_args()
     if not args.execute:
         print('NOT_EXECUTED: --execute required; no API, Docker or Kubernetes call was made.')
@@ -503,10 +524,12 @@ def main():
     require(1 <= args.sequential_runs <= 1000 and 1 <= args.crash_submits <= 1000, 'invalid_campaign_counts')
     cluster = Cluster()
     report = {'scope': 'real_kind_gvisor_lifecycle', 'network_isolation': 'not_qualified', 'eks': 'not_run',
-              'sequential_runs': args.sequential_runs, 'crash_submits': args.crash_submits, 'status': 'failed'}
+              'selection': args.only_case,
+              'sequential_runs': args.sequential_runs if args.only_case == 'all' else 0,
+              'crash_submits': args.crash_submits if args.only_case == 'all' else 0, 'status': 'failed'}
     try:
         cluster.install()
-        report['cases'] = run_campaign(cluster, args.sequential_runs, args.crash_submits)
+        report['cases'] = run_campaign(cluster, args.sequential_runs, args.crash_submits, args.only_case)
         report['status'] = 'passed'
     except Exception as failure:
         report['failure'] = str(failure) if isinstance(failure, CheckFailed) else type(failure).__name__

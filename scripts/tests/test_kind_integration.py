@@ -24,6 +24,48 @@ campaign = module('kind_integration')
 
 
 class KindSafetyTests(unittest.TestCase):
+    def test_cancellation_waits_for_handler_and_never_accepts_a_remaining_pod(self):
+        class FakeCluster:
+            def __init__(self, premature=False):
+                self.ready = self.cancelled = False
+                self.log_reads = self.polls = 0
+                self.premature = premature
+            def submit(self, *args, **kwargs): return {'id': 'synthetic'}
+            def running_pod(self, run): return {'spec': {'terminationGracePeriodSeconds': 30}}
+            def request(self, method, path, **kwargs):
+                if path.endswith('/logs'):
+                    self.log_reads += 1
+                    self.ready = self.log_reads > 1
+                    return {'logs': 'ignoring-term' if self.ready else ''}
+                if not self.ready:
+                    raise AssertionError('cancelled before handler readiness')
+                self.cancelled = True
+                return {}
+            def get(self, run):
+                self.polls += 1
+                return {'state': 'cancelled' if self.premature or self.polls > 1 else 'cancelling'}
+            def pods(self, run):
+                return [{'metadata': {'deletionGracePeriodSeconds': 30}}] if self.polls == 1 else []
+        cluster = FakeCluster()
+        with patch.object(campaign.time, 'sleep'):
+            result = campaign.cancel_ignoring_term(cluster)
+        self.assertTrue(cluster.cancelled)
+        self.assertEqual(cluster.log_reads, 2)
+        self.assertTrue(result['handler_ready'])
+        self.assertEqual(result['observed_delete_grace_seconds'], [30])
+        with patch.object(campaign.time, 'sleep'), self.assertRaisesRegex(campaign.CheckFailed, 'cancelled_before_pod_disappeared'):
+            campaign.cancel_ignoring_term(FakeCluster(premature=True))
+
+    def test_targeted_report_cannot_claim_the_full_stress_counts(self):
+        import json
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as temporary, patch.object(campaign, 'WORK', Path(temporary)), patch.object(campaign, 'Cluster', return_value=Mock()), patch.object(campaign, 'run_campaign', return_value=[]), patch('sys.argv', ['tool', '--execute', '--only-case', 'cancel_ignores_sigterm_until_gone']):
+            self.assertEqual(campaign.main(), 0)
+            report = json.loads((Path(temporary) / 'result.json').read_text())
+        self.assertEqual(report['selection'], 'cancel_ignores_sigterm_until_gone')
+        self.assertEqual(report['sequential_runs'], 0)
+        self.assertEqual(report['crash_submits'], 0)
+
     def test_watch_uses_list_snapshot_in_raw_api_request_and_counts_uids(self):
         import json
         from unittest.mock import Mock
