@@ -92,6 +92,268 @@ class DecisionTests(unittest.TestCase):
             report.update(full_cost_usd=cost, billing_complete=True, node_reduction_demonstrated=True,
                           cost_accounting_ref="offline-billing-fixture.json")
 
+    def use_measured_latency(self, baseline=1, candidate=2.9, gap=.1, boundary="outcome_visible_to_caller"):
+        self.use_explicit_latency(boundary=boundary, baseline=baseline, candidate=candidate)
+        self.protocol.update(format_version=3, observation_policy={
+            "mode": "fixed_cadence", "period_seconds": .1, "max_terminal_gap_seconds": .5})
+        self.registration["poll_seconds"] = .1
+        self.registration["protocol"] = copy.deepcopy(self.protocol)
+        self.digest = decision.collector.digest(self.protocol)
+        self.registration["protocol_sha256"] = self.digest
+        for report in (self.baseline, self.candidate):
+            report.update(protocol_sha256=self.digest, registration_sha256=decision.collector.digest(self.registration),
+                          observation_policy=copy.deepcopy(self.protocol["observation_policy"]), poll_seconds=.1)
+            for trial in report["trials"]:
+                event = trial["timing"]["events"][boundary]
+                self.interval(event, gap)
+                trial["timing"]["sampling"] = {"scheduled_polls": 20, "completed_polls": 18,
+                    "missed_ticks": 2, "max_start_lateness_seconds": .04}
+
+    def interval(self, event, gap, no_nonterminal=False):
+        upper = event["elapsed_seconds"]
+        lower = 0 if no_nonterminal else upper - gap
+        event["observation_interval"] = {
+            "last_nonterminal_request_start_seconds": None if no_nonterminal else lower,
+            "last_nonterminal_response_elapsed_seconds": None if no_nonterminal else lower + .01,
+            "terminal_request_start_seconds": upper - .01,
+            "lower_bound_elapsed_seconds": lower, "upper_bound_elapsed_seconds": upper,
+            "gap_seconds": upper - lower,
+            "lower_bound_basis": "submission_start_no_nonterminal" if no_nonterminal else "last_nonterminal_request_start"}
+
+    def test_measured_latency_uses_conservative_p95_bounds_before_value_routes(self):
+        self.use_measured_latency()
+        self.measured_cost_win()
+        result = self.evaluate()
+        self.assertEqual(result["format_version"], 3)
+        self.assertEqual(result["decision"], "continue_validation")
+        gate = result["latency_gate"]
+        self.assertEqual(gate["status"], "pass")
+        self.assertTrue(gate["passes"])
+        self.assertAlmostEqual(gate["pass_limit_seconds"], .9 * 1.1 + 2)
+        self.assertAlmostEqual(gate["fail_limit_seconds"], 1 * 1.1 + 2)
+        observation = result["candidate"]["latency_observation"]
+        self.assertEqual(observation["interval_samples"], 30)
+        self.assertEqual(observation["missing_intervals"], 0)
+        self.assertAlmostEqual(observation["p95_lower_bound_seconds"], 2.8)
+        self.assertAlmostEqual(observation["p95_upper_bound_seconds"], 2.9)
+        self.assertAlmostEqual(observation["max_gap_seconds"], .1)
+        self.assertTrue(observation["measurable"])
+        self.assertEqual(observation["sampling"]["completed_polls"], 540)
+        self.assertEqual(observation["sampling"]["missed_ticks"], 60)
+
+    def test_point_estimate_pass_is_not_a_pass_when_interval_crosses_gate(self):
+        self.use_measured_latency(candidate=3.05)
+        self.measured_cost_win()
+        result = self.evaluate()
+        self.assertEqual(result["decision"], "insufficient_evidence")
+        self.assertEqual(result["latency_gate"]["status"], "not_measurable")
+        self.assertIsNone(result["latency_gate"]["passes"])
+        self.assertEqual(result["routes"], {})
+        self.assertIn("overlap", result["reasons"][0])
+
+    def test_measured_latency_requires_certain_failure_before_change_direction(self):
+        self.use_measured_latency(candidate=3.3)
+        self.measured_cost_win()
+        result = self.evaluate()
+        self.assertEqual(result["decision"], "change_direction")
+        self.assertEqual(result["latency_gate"]["status"], "fail")
+        self.assertFalse(result["latency_gate"]["passes"])
+
+    def test_one_large_gap_blocks_latency_even_when_p95_gap_and_cost_look_good(self):
+        self.use_measured_latency(baseline=10, candidate=10)
+        self.measured_cost_win()
+        self.interval(self.candidate["trials"][0]["timing"]["events"]["outcome_visible_to_caller"], .6)
+        result = self.evaluate()
+        observation = result["candidate"]["latency_observation"]
+        self.assertAlmostEqual(observation["p95_gap_seconds"], .1)
+        self.assertEqual(observation["oversized_gaps"], 1)
+        self.assertFalse(observation["measurable"])
+        self.assertEqual(result["latency_gate"]["status"], "not_measurable")
+        self.assertEqual(result["decision"], "insufficient_evidence")
+        self.assertEqual(result["routes"], {})
+
+    def test_missing_interval_does_not_silently_use_point_estimate(self):
+        self.use_measured_latency()
+        self.measured_cost_win()
+        self.candidate["trials"][0]["timing"]["events"]["outcome_visible_to_caller"].pop("observation_interval")
+        result = self.evaluate()
+        observation = result["candidate"]["latency_observation"]
+        self.assertEqual(observation["missing_intervals"], 1)
+        self.assertIsNone(observation["p95_lower_bound_seconds"])
+        self.assertEqual(result["decision"], "insufficient_evidence")
+        self.assertEqual(result["latency_gate"]["status"], "not_measurable")
+
+    def test_missing_nonterminal_observation_uses_full_submission_bound(self):
+        self.use_measured_latency(baseline=.2, candidate=1)
+        self.measured_cost_win()
+        for trial in self.baseline["trials"]:
+            self.interval(trial["timing"]["events"]["outcome_visible_to_caller"], .2, no_nonterminal=True)
+        result = self.evaluate()
+        self.assertEqual(result["decision"], "continue_validation")
+        observation = result["baseline"]["latency_observation"]
+        self.assertEqual(observation["p95_lower_bound_seconds"], 0)
+        self.assertEqual(observation["missing_nonterminal_observations"], 30)
+        # A missing lower observation for an ordinary longer trial consumes its
+        # entire submission-to-receipt interval rather than inventing a sample.
+        for trial in self.candidate["trials"]:
+            self.interval(trial["timing"]["events"]["outcome_visible_to_caller"], 1, no_nonterminal=True)
+        self.assertEqual(self.evaluate()["latency_gate"]["status"], "not_measurable")
+
+    def test_interval_bounds_reject_inconsistent_or_malformed_evidence(self):
+        self.use_measured_latency()
+        changes = (
+            {"lower_bound_elapsed_seconds": -1}, {"upper_bound_elapsed_seconds": float("inf")},
+            {"gap_seconds": True}, {"gap_seconds": .01}, {"upper_bound_elapsed_seconds": 2.8},
+            {"terminal_request_start_seconds": 3}, {"last_nonterminal_request_start_seconds": None},
+            {"last_nonterminal_response_elapsed_seconds": None},
+            {"last_nonterminal_response_elapsed_seconds": 3},
+            {"last_nonterminal_request_start_seconds": .5}, {"lower_bound_basis": "guessed"},
+            {"last_nonterminal_state": "succeeded"}, {"last_nonterminal_state": None},
+            {"last_nonterminal_observed_at": "not-a-time"},
+            {"unexpected": 1},
+        )
+        for changeset in changes:
+            candidate = copy.deepcopy(self.candidate)
+            candidate["trials"][0]["timing"]["events"]["outcome_visible_to_caller"]["observation_interval"].update(changeset)
+            with self.subTest(change=changeset), self.assertRaises(ValueError):
+                decision.decide(self.protocol, self.digest, self.baseline, candidate, self.registration)
+        event = self.candidate["trials"][0]["timing"]["events"]["outcome_visible_to_caller"]
+        self.interval(event, event["elapsed_seconds"], no_nonterminal=True)
+        event["observation_interval"]["last_nonterminal_state"] = "running"
+        with self.assertRaisesRegex(ValueError, "missing nonterminal"):
+            self.evaluate()
+
+    def test_observation_policy_and_cadence_are_bound_to_registration(self):
+        self.use_measured_latency()
+        for mutate in (
+                lambda report: report.pop("observation_policy"),
+                lambda report: report["observation_policy"].update(max_terminal_gap_seconds=3),
+                lambda report: report.update(poll_seconds=.5)):
+            candidate = copy.deepcopy(self.candidate)
+            mutate(candidate)
+            with self.assertRaisesRegex(ValueError, "observation policy"):
+                decision.decide(self.protocol, self.digest, self.baseline, candidate, self.registration)
+        registration = copy.deepcopy(self.registration)
+        registration["poll_seconds"] = .5
+        with self.assertRaisesRegex(ValueError, "polling"):
+            decision.decide(self.protocol, self.digest, self.baseline, self.candidate, registration)
+
+    def test_observation_policy_requires_supported_finite_bounded_values(self):
+        self.use_measured_latency()
+        for key, value in (("mode", "sleep_after_work"), ("period_seconds", True), ("period_seconds", 0),
+                           ("period_seconds", 6), ("max_terminal_gap_seconds", .01),
+                           ("max_terminal_gap_seconds", float("nan")), ("max_terminal_gap_seconds", 3601)):
+            protocol = copy.deepcopy(self.protocol)
+            protocol["observation_policy"][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                decision.validate_protocol(protocol)
+        for key in ("mode", "period_seconds", "max_terminal_gap_seconds"):
+            protocol = copy.deepcopy(self.protocol)
+            protocol["observation_policy"].pop(key)
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                decision.validate_protocol(protocol)
+
+    def test_v3_requires_independently_sampled_caller_boundary_without_changing_v2(self):
+        self.use_measured_latency()
+        for boundary in ("pod_terminal", "validated_completion"):
+            protocol = copy.deepcopy(self.protocol)
+            protocol["latency_policy"]["boundary"] = boundary
+            with self.subTest(v3=boundary), self.assertRaisesRegex(ValueError, "caller-outcome"):
+                decision.validate_protocol(protocol)
+            protocol["format_version"] = 2
+            protocol.pop("observation_policy")
+            decision.validate_protocol(protocol)
+
+    def test_sampling_diagnostics_are_visible_but_do_not_replace_transition_bounds(self):
+        self.use_measured_latency()
+        self.measured_cost_win()
+        self.candidate["trials"][0]["timing"].pop("sampling")
+        result = self.evaluate()
+        self.assertEqual(result["decision"], "continue_validation")
+        self.assertEqual(result["candidate"]["latency_observation"]["sampling"]["trials_missing_diagnostics"], 1)
+        self.candidate["trials"][1]["timing"]["sampling"]["missed_ticks"] = -1
+        with self.assertRaisesRegex(ValueError, "sampling diagnostics"):
+            self.evaluate()
+
+    def test_new_examples_separate_profiles_and_job_instrument_contract(self):
+        directory = Path(__file__).resolve().parents[2] / "evaluation"
+        identifiers = []
+        for name, baseline in (("short-measured", "agent-sandbox"), ("minute-measured", "agent-sandbox"),
+                               ("job-instrument-check", "direct-job")):
+            protocol = json.loads((directory / ("decision." + name + ".example.json")).read_text())
+            decision.validate_protocol(protocol)
+            self.assertEqual(protocol["format_version"], 3)
+            self.assertEqual(protocol["baseline"], baseline)
+            self.assertEqual(protocol["candidate"], "agentos")
+            self.assertEqual(protocol["observation_policy"], {
+                "mode": "fixed_cadence", "period_seconds": .1, "max_terminal_gap_seconds": .5})
+            self.assertEqual(protocol["latency_policy"]["absolute_allowance_seconds"], 2)
+            self.assertEqual(protocol["max_p95_latency_ratio"], 1.1)
+            identifiers.append(protocol["experiment_id"])
+        self.assertEqual(len(set(identifiers)), 3)
+
+    def test_v3_direct_job_reports_use_job_identity_and_interval_contract(self):
+        self.protocol["baseline"] = self.baseline["baseline"] = "direct-job"
+        self.use_measured_latency()
+        self.measured_cost_win()
+        result = self.evaluate()
+        self.assertEqual(result["latency_gate"]["status"], "pass")
+        self.assertEqual(result["baseline"]["latency_observation"]["interval_samples"], 30)
+        diagnostic = result["instrument_check"]
+        self.assertEqual(diagnostic["status"], "inspect_components")
+        self.assertEqual(diagnostic["flags"], [])
+        self.assertAlmostEqual(diagnostic["observed_p95_difference_seconds"], 1.9)
+        self.assertAlmostEqual(diagnostic["p95_difference_bounds_seconds"]["lower"], 1.8)
+        self.assertAlmostEqual(diagnostic["p95_difference_bounds_seconds"]["upper"], 2.0)
+        self.assertIsNone(diagnostic["expected_difference_seconds"])
+
+    def test_instrument_check_flags_unexpected_direction_or_large_delay_without_correcting_timing(self):
+        for baseline, candidate, flag in ((3, 1, "candidate_faster_than_job_path"),
+                                           (1, 4, "additional_delay_requires_review")):
+            with self.subTest(flag=flag):
+                self.setUp()
+                self.protocol["baseline"] = self.baseline["baseline"] = "direct-job"
+                self.use_measured_latency(baseline=baseline, candidate=candidate)
+                for report in (self.baseline, self.candidate):
+                    report["qualification"] = {"status": "not_verified"}
+                result = self.evaluate()
+                diagnostic = result["instrument_check"]
+                self.assertEqual(diagnostic["status"], "review_required")
+                self.assertEqual(diagnostic["flags"], [flag])
+                self.assertAlmostEqual(diagnostic["observed_p95_difference_seconds"], candidate - baseline)
+                self.assertEqual(result["decision"], "insufficient_evidence")
+                self.assertIsNone(result["latency_gate"]["passes"])
+
+    def test_instrument_check_withholds_precision_claim_for_large_or_missing_intervals(self):
+        self.protocol["baseline"] = self.baseline["baseline"] = "direct-job"
+        self.use_measured_latency()
+        self.interval(self.candidate["trials"][0]["timing"]["events"]["outcome_visible_to_caller"], .6)
+        self.assertEqual(self.evaluate()["instrument_check"]["status"], "not_measurable")
+        for trial in self.candidate["trials"]:
+            trial["timing"]["events"]["outcome_visible_to_caller"].pop("observation_interval")
+        result = self.evaluate()
+        self.assertEqual(result["instrument_check"]["status"], "not_measurable")
+        self.assertIsNone(result["instrument_check"]["p95_difference_bounds_seconds"])
+
+    def test_upstream_and_legacy_direct_job_reports_do_not_claim_instrument_calibration(self):
+        self.use_measured_latency()
+        self.assertNotIn("instrument_check", self.evaluate())
+        self.setUp()
+        self.protocol["baseline"] = self.baseline["baseline"] = "direct-job"
+        self.use_explicit_latency()
+        self.assertNotIn("instrument_check", self.evaluate())
+
+    def test_p95_interval_uses_full_successful_trial_set(self):
+        self.use_measured_latency()
+        for report in (self.baseline, self.candidate):
+            for trial in report["trials"][-2:]:
+                event = trial["timing"]["events"]["outcome_visible_to_caller"]
+                event["elapsed_seconds"] = 5
+                self.interval(event, .1)
+        result = self.evaluate()
+        self.assertEqual(result["baseline"]["latency_observation"]["p95_upper_bound_seconds"], 5)
+        self.assertAlmostEqual(result["candidate"]["latency_observation"]["p95_lower_bound_seconds"], 4.9)
+
     def test_legacy_ratio_and_output_contract_stay_unchanged(self):
         expected = {"trials": 30, "correct": 30, "correct_fraction": 1.0,
                     "successful_p95_seconds": 10, "qualification": "passed"}

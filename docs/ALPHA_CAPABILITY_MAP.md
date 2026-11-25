@@ -12,6 +12,8 @@ The same day's [timing follow-up](robustness/JOB_CONTROLLER_TIMING_2026-11-24.md
 
 The full regression at `6389b17` is now verified as successful, with its source/run/artifact binding and limits in that report. [Decision 0009](decisions/0009-comparison-boundaries-and-latency-budget.md) prepares two separate future comparison profiles, nominal one-second tools and sixty-second tasks. New format-2 protocols select caller-visible outcome p95 with the predeclared allowance `baseline * 1.10 + 2 seconds`, retain all three observed timing boundaries and preserve format-1 behavior. These collector/report changes do not add runtime capabilities or establish a comparative benefit.
 
+[Decision 0010](decisions/0010-comparison-observation-precision.md) supersedes format 2 for new pilot collection: format-3 protocols use shared authenticated transport, a separate fixed-cadence sampler and bounded observation intervals. Coarse or gate-straddling latency evidence remains `not_measurable`; legacy formats and registrations retain their original rules. The [precision report](robustness/OBSERVATION_PRECISION_2026-11-24.md) separates local validation from the EKS instrument check and comparative measurements still pending.
+
 This document can be shared with a researcher reviewing the public repository. It distinguishes inspected local code, documented upstream capabilities and results that still need measurement. The November 19 upstream feature comparison below is historical research, not a measured comparison against the reference projects.
 
 ## What the alpha actually does

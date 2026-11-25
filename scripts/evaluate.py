@@ -11,6 +11,7 @@ import datetime as dt
 from decimal import Decimal, InvalidOperation
 import hashlib
 import http.client
+import importlib.util
 import ipaddress
 import json
 import math
@@ -21,6 +22,7 @@ import selectors
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -29,6 +31,7 @@ import uuid
 
 
 MAX_JSON = 512 * 1024
+MAX_EVIDENCE = 2 * 1024 * 1024
 MAX_LOG = 64 * 1024
 LABEL = "agentos.dev/evaluation"
 MANAGED = "app.kubernetes.io/managed-by"
@@ -37,6 +40,7 @@ BASELINES = ("direct-job", "agentos", "agent-sandbox")
 EXT = "extensions.agents.x-k8s.io/v1beta1"
 CORE = "agents.x-k8s.io/v1beta1"
 TERMINAL = {"succeeded", "failed", "cancelled"}
+RUN_STATES = TERMINAL | {"queued", "starting", "activating", "running", "cancelling"}
 NAME = re.compile(r"[a-z][a-z0-9-]{0,61}[a-z0-9]$|[a-z]$")
 DIGEST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$")
 
@@ -48,6 +52,17 @@ class Failure(Exception):
 def require(condition, code):
     if not condition:
         raise Failure(code)
+
+
+def support_module(name):
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+transport = support_module("evaluation_transport")
+OutcomeObserver = support_module("evaluation_observer").OutcomeObserver
 
 
 def now():
@@ -62,7 +77,7 @@ def digest(value):
     return hashlib.sha256(encoded(value)).hexdigest()
 
 
-def read_json(path, limit=MAX_JSON):
+def read_json(path, limit=MAX_EVIDENCE):
     with open(path, "rb") as stream:
         raw = stream.read(limit + 1)
     require(len(raw) <= limit, "input_too_large")
@@ -90,7 +105,7 @@ def private_directory(path):
 
 def write_json(path, value, exclusive=False):
     data = encoded(value) + b"\n"
-    require(len(data) <= MAX_JSON, "evidence_too_large")
+    require(len(data) <= MAX_EVIDENCE, "evidence_too_large")
     private_directory(path.parent)
     require(not path.is_symlink(), "evidence_symlink_refused")
     if exclusive:
@@ -162,8 +177,9 @@ def validate_protocol(protocol):
               "minimum_correct_fraction", "max_p95_latency_ratio", "min_cost_improvement_fraction",
               "min_operator_improvement_fraction"}
     version = protocol.get("format_version")
-    require(type(version) is int and version in (1, 2)
-            and set(protocol) == fields | ({"latency_policy"} if version == 2 else set()),
+    require(type(version) is int and version in (1, 2, 3)
+            and set(protocol) == fields | ({"latency_policy"} if version >= 2 else set())
+                | ({"observation_policy"} if version == 3 else set()),
             "protocol_fields_or_version")
     require(protocol["baseline"] in BASELINES and protocol["candidate"] in BASELINES
             and protocol["baseline"] != protocol["candidate"], "protocol_baselines")
@@ -172,7 +188,7 @@ def validate_protocol(protocol):
                               ("min_cost_improvement_fraction", 0.001, 0.99), ("min_operator_improvement_fraction", 0.001, 0.99)):
         value = protocol[key]
         require(type(value) in (int, float) and math.isfinite(value) and lower <= value <= upper, "protocol_metric_bounds")
-    if version == 2:
+    if version >= 2:
         policy = protocol["latency_policy"]
         require(isinstance(policy, dict) and set(policy) == {
             "boundary", "mode", "absolute_allowance_seconds", "rationale"}, "latency_policy_fields")
@@ -188,6 +204,17 @@ def validate_protocol(protocol):
         except UnicodeError:
             valid_rationale = False
         require(valid_rationale, "latency_policy_rationale")
+    if version == 3:
+        require(protocol["latency_policy"]["boundary"] == "outcome_visible_to_caller", "unsupported_observation_boundary")
+        policy = protocol["observation_policy"]
+        require(isinstance(policy, dict) and set(policy) == {
+            "mode", "period_seconds", "max_terminal_gap_seconds"}, "observation_policy_fields")
+        require(policy["mode"] == "fixed_cadence", "observation_policy_mode")
+        period, gap = policy["period_seconds"], policy["max_terminal_gap_seconds"]
+        require(type(period) in (int, float) and math.isfinite(period) and .01 <= period <= 5,
+                "observation_period_bounds")
+        require(type(gap) in (int, float) and math.isfinite(gap) and period <= gap <= 3600,
+                "observation_gap_bounds")
 
 
 def deadline_scope(workload, baseline="agentos"):
@@ -404,6 +431,56 @@ class AgentOS:
             raise Failure("invalid_api_json") from None
         require(isinstance(value, dict), "invalid_api_json")
         return value
+
+
+class PersistentAgentOS(AgentOS):
+    """Dedicated persistent channel; no proxy environment or redirects."""
+    def __init__(self, base, token_env):
+        super().__init__(base, token_env)
+        self.token_env = token_env
+        parsed = urllib.parse.urlsplit(self.base)
+        self.connection = transport.persistent_http_connection(parsed.scheme, parsed.hostname, parsed.port, timeout=10)
+        self.lock = threading.Lock()
+
+    def call(self, path, body=None, key=None):
+        require(path.startswith("/") and not path.startswith("//") and "\r" not in path and "\n" not in path,
+                "invalid_api_path")
+        headers = {"Authorization": "Bearer " + self.token, "Content-Type": "application/json"}
+        if key:
+            headers["Idempotency-Key"] = key
+        with self.lock:
+            try:
+                self.connection.begin_request()
+                self.connection.request("GET" if body is None else "POST", path,
+                                        body=None if body is None else encoded(body), headers=headers)
+                response = self.connection.getresponse()
+                raw = response.read(MAX_JSON + 1)
+                require(len(raw) <= MAX_JSON, "api_response_too_large")
+                require(200 <= response.status < 300, "api_http_" + str(response.status))
+                value = json.loads(raw)
+                require(isinstance(value, dict), "invalid_api_json")
+                return value
+            except Failure:
+                self.connection.close()
+                raise
+            except (ValueError, UnicodeError):
+                self.connection.close()
+                raise Failure("invalid_api_json") from None
+            except (OSError, http.client.HTTPException):
+                self.connection.close()
+                raise Failure("api_transport_outcome_unknown") from None
+
+    def fork(self):
+        child = PersistentAgentOS(self.base, self.token_env)
+        try:
+            require(child.call("/readyz").get("status") == "ready", "api_not_execution_ready")
+            return child
+        except BaseException:
+            child.close()
+            raise
+
+    def close(self):
+        self.connection.close()
 
 
 def resource_name(obj):
@@ -697,7 +774,7 @@ def job_terminal_state(job):
     return next(iter(outcomes)) if outcomes else None
 
 
-def trial(kube, registration, baseline, index, result, save, api=None):
+def legacy_trial(kube, registration, baseline, index, result, save, api=None):
     start = time.monotonic()
     result.update({"correct": False, "elapsed_seconds": 0.0, "status": "running", "resources": [], "descendants": [],
                    "timing": trial_timing(baseline)})
@@ -890,6 +967,257 @@ def trial(kube, registration, baseline, index, result, save, api=None):
         save()
 
 
+def measured_trial(kube, registration, baseline, index, result, save, api=None):
+    """v3: one independent gated read per fixed tick; validation never schedules it."""
+    result.update(correct=False, elapsed_seconds=0.0, status="running", resources=[], descendants=[],
+                  timing=trial_timing(baseline))
+    name = "ae-" + registration["registration_id"][:16] + "-" + {
+        "direct-job": "d", "agentos": "a", "agent-sandbox": "s"}[baseline] + "-" + str(index)
+    parent = observer = sampling_kube = sampling_api = None
+    start = None
+    target = {"run_id": None}
+    identity = None
+
+    def read_outcome():
+        nonlocal identity
+        if baseline == "agentos":
+            run_id = target["run_id"]
+            if run_id is None:
+                return None
+            obj = sampling_api.call("/v1/runs/" + run_id)
+            require(obj.get("id") == run_id, "api_run_identity_changed")
+            assert_record_spec(obj, registration)
+            state, facts = obj.get("state"), {"run_id": run_id}
+            require(isinstance(state, str) and state in RUN_STATES, "invalid_api_run_state")
+            terminal = state in TERMINAL
+        elif baseline == "direct-job":
+            obj = sampling_kube.get("job", name)
+            if obj is None:
+                return None
+            check_owned(obj, registration, {"name": name})
+            assert_job_profile(obj, registration)
+            state = job_terminal_state(obj)
+            terminal, facts = state is not None, {"resource_uid": obj["metadata"]["uid"]}
+            state = state or "Nonterminal"
+        else:
+            objects = sampling_kube.get("pods", selector=LABEL + "=" + registration["registration_id"]) or {"items": []}
+            candidates = objects.get("items", [])
+            require(len(candidates) <= 1, "multiple_execution_pods")
+            if not candidates:
+                return None
+            obj = candidates[0]
+            expected = pod_template(registration["workload"], {}, baseline=baseline)
+            assert_pod_profile(obj.get("spec", {}), expected["spec"])
+            assert_pod_metadata(obj.get("metadata", {}), expected["metadata"])
+            meta = obj.get("metadata", {})
+            require(meta.get("namespace") == registration["namespace"]
+                    and meta.get("labels", {}).get(LABEL) == registration["registration_id"], "pod_sample_identity_missing")
+            owners = [owner.get("uid") for owner in meta.get("ownerReferences", []) if owner.get("controller") is True]
+            require(len(owners) == 1 and owners[0] and meta.get("uid") and meta.get("name"), "pod_sample_identity_missing")
+            state = obj.get("status", {}).get("phase")
+            require(state in {None, "", "Pending", "Running", "Unknown", "Succeeded", "Failed"}, "invalid_pod_phase")
+            if state in (None, ""):
+                return None
+            terminal = state in {"Succeeded", "Failed"}
+            facts = {"pod_uid": meta["uid"], "parent_uid": owners[0]}
+        fingerprint = tuple(sorted(facts.items()))
+        require(identity is None or identity == fingerprint, "sampled_execution_identity_changed")
+        identity = fingerprint
+        return {"terminal": terminal, "state": state, "facts": facts, "object": obj}
+
+    try:
+        # Establish/warm dedicated channels before starting the submission clock.
+        sampling_kube = kube.fork()
+        if api:
+            sampling_api = api.fork()
+            result.update(idempotency_key=name, submission_uncertain=True)
+        else:
+            manifest = (job_manifest(registration, name, index) if baseline == "direct-job" else {
+                "apiVersion": EXT, "kind": "SandboxClaim", "metadata": {
+                    "name": name, "namespace": registration["namespace"], "labels": labels(registration, index)},
+                "spec": {"warmPoolRef": {"name": "ae-" + registration["registration_id"][:16]}}})
+            result["resources"].append(reference(manifest))
+            result["submission_uncertain"] = True
+        save()  # Durable exact submission intent precedes the timed request.
+        start = time.monotonic()
+        observer = OutcomeObserver(read_outcome, start, registration["poll_seconds"], Failure).launch()
+        if api:
+            record = None
+            for _ in range(2):
+                request_start = time.monotonic()
+                try:
+                    record = api.call("/v1/runs", request_body(registration), key=result["idempotency_key"])
+                    response_end = time.monotonic()
+                    break
+                except Failure as error:
+                    if str(error) not in {"api_transport_outcome_unknown", "api_http_500", "api_http_502", "api_http_503",
+                                          "api_http_504", "invalid_api_json", "api_response_too_large"}:
+                        raise
+            require(record is not None, "api_submission_outcome_unknown")
+            run_id = record.get("id", "")
+            require(isinstance(run_id, str) and re.fullmatch(r"[a-f0-9]{32}", run_id), "invalid_api_run_id")
+            result.update(run_id=run_id, submission_uncertain=False)
+            assert_record_spec(record, registration)
+            require(record.get("state") in RUN_STATES, "invalid_api_run_state")
+            if record.get("state") in TERMINAL:
+                observer.accept({"terminal": True, "state": record["state"], "facts": {"run_id": run_id},
+                                 "object": record}, request_start, response_end)
+            target["run_id"] = run_id
+            name = "agentos-" + run_id
+        else:
+            request_start = time.monotonic()
+            parent = kube.create(manifest)
+            response_end = time.monotonic()
+            check_owned(parent, registration, result["resources"][0])
+            result["resources"][0] = reference(parent)
+            result["submission_uncertain"] = False
+            if baseline == "direct-job":
+                assert_job_profile(parent, registration)
+                state = job_terminal_state(parent)
+                if state:
+                    observer.accept({"terminal": True, "state": state,
+                        "facts": {"resource_uid": parent["metadata"]["uid"]}, "object": parent}, request_start, response_end)
+        save()
+        while time.monotonic() - start < registration["trial_timeout_seconds"]:
+            latest, terminal, failure, _ = observer.snapshot()
+            require(failure is None, failure or "outcome_observer_failed")
+            pod = None
+            pod_receipt = None
+            if api:
+                if parent is None:
+                    parent = kube.get("job", name)
+                    if parent is not None:
+                        result["resources"] = [tag_api_job(kube, registration, parent)]
+                if parent is not None:
+                    current = kube.get("job", name)
+                    if current is not None:
+                        check_owned(current, registration, result["resources"][0])
+                        assert_job_profile(current, registration)
+                    else:
+                        # Cleanup can race this independent sampler's next tick.
+                        # A previously verified Job's absence supplies no API
+                        # outcome; keep waiting for the authoritative response.
+                        result["execution_disappearance_observed"] = True
+                    pods = kube.get("pods", selector="agentos.dev/run-id=" + result["run_id"]) or {"items": []}
+                    pod_receipt = timing_receipt(start)
+                    candidates = [item for item in pods.get("items", []) if owned_by(item, parent)]
+                    require(len(candidates) <= 1, "multiple_execution_pods")
+                    pod = candidates[0] if candidates else None
+                try:
+                    logs = api.call("/v1/runs/" + result["run_id"] + "/logs").get("logs", "")
+                    require(isinstance(logs, str), "invalid_api_logs")
+                except Failure as error:
+                    if str(error) not in {"api_http_404", "api_http_503"}:
+                        raise
+                    logs = ""
+                pod_parent = parent
+            elif baseline == "direct-job":
+                if latest:
+                    check_owned(latest["object"], registration, result["resources"][0])
+                pods = kube.get("pods", selector=LABEL + "=" + registration["registration_id"]) or {"items": []}
+                pod_receipt = timing_receipt(start)
+                candidates = [item for item in pods.get("items", []) if owned_by(item, parent)]
+                require(len(candidates) <= 1, "multiple_execution_pods")
+                pod, pod_parent = candidates[0] if candidates else None, parent
+                logs = ""
+            else:
+                claim = kube.get("sandboxclaims.extensions.agents.x-k8s.io", name)
+                require(claim is not None, "execution_disappeared")
+                check_owned(claim, registration, result["resources"][0])
+                sandbox_name = claim.get("status", {}).get("sandbox", {}).get("name")
+                pod_parent = kube.get("sandboxes.agents.x-k8s.io", sandbox_name) if sandbox_name else None
+                if pod_parent:
+                    require(owned_by(pod_parent, parent), "sandbox_owner_changed")
+                    require(pod_parent.get("metadata", {}).get("labels", {}).get("agents.x-k8s.io/launch-type") != "warm",
+                            "cold_baseline_received_warm_sandbox")
+                    remember_descendant(result, pod_parent, parent)
+                    pod = latest["object"] if latest else None
+                logs = ""
+            if pod is not None:
+                expected = pod_template(registration["workload"], {}, baseline=baseline)
+                assert_pod_profile(pod.get("spec", {}), expected["spec"])
+                assert_pod_metadata(pod.get("metadata", {}), expected["metadata"])
+                remember_descendant(result, pod, pod_parent)
+                observe_trial_pod(result, pod, pod_parent, pod_receipt or {
+                    "observed_at": latest["observed_at"], "elapsed_seconds": latest["elapsed_seconds"]})
+                if not api:
+                    try:
+                        logs = kube.logs(pod["metadata"]["name"])
+                    except Failure as error:
+                        if terminal is not None or str(error) != "kubectl_request_failed":
+                            raise
+            if validate_logs(logs, registration["workload"]) and "readiness_seconds" not in result:
+                result["readiness_seconds"] = time.monotonic() - start
+            if terminal is not None:
+                receipt = {key: terminal[key] for key in ("observed_at", "elapsed_seconds", "observation_interval")}
+                observe_trial_event(result, "outcome_visible_to_caller", receipt, state=terminal["state"], **terminal["facts"])
+                if baseline == "agent-sandbox":
+                    require(pod is not None and pod_parent is not None, "sampled_pod_ancestry_unverified")
+                    require(pod["metadata"]["uid"] == terminal["facts"]["pod_uid"], "execution_pod_identity_changed")
+                    # The same verified response supplies both native boundaries.
+                    result["timing"]["events"]["pod_terminal"].update(receipt)
+                successful = terminal["state"] == {"agentos": "succeeded", "direct-job": "Complete", "agent-sandbox": "Succeeded"}[baseline]
+                require(successful, "execution_failed")
+                require(parent is not None, "api_execution_not_found_in_selected_context")
+                validate_logs(logs, registration["workload"], complete=True)
+                result.update(correct=True, stdout_sha256=hashlib.sha256(logs.encode()).hexdigest())
+                break
+            save()
+            # Control work can be slow; it never determines the sampling grid.
+            observer.changed.wait(.5)
+            observer.changed.clear()
+        else:
+            raise Failure("trial_observer_timeout")
+    except KeyboardInterrupt:
+        result["error"] = "interrupted"
+        raise
+    except Failure as error:
+        result["error"] = str(error)
+    except Exception:
+        result["error"] = "unexpected_observer_failure"
+    finally:
+        result["elapsed_seconds"] = max(0.0, time.monotonic() - start) if start is not None else 0.0
+        if observer:
+            try:
+                observer.close()
+            except Failure as error:
+                result.update(correct=False, error=str(error))
+            _, terminal, failure, stats = observer.snapshot()
+            result["timing"]["sampling"] = stats
+            if terminal is not None and result["timing"]["events"]["outcome_visible_to_caller"]["status"] == "missing":
+                observe_trial_event(result, "outcome_visible_to_caller", {
+                    key: terminal[key] for key in ("observed_at", "elapsed_seconds", "observation_interval")},
+                    state=terminal["state"], **terminal["facts"])
+            if failure:
+                result.update(correct=False, error=failure)
+        if result["correct"]:
+            observe_trial_event(result, "validated_completion", {"observed_at": now(),
+                "elapsed_seconds": result["elapsed_seconds"]}, state="succeeded")
+        finish_trial_timing(result)
+        for channel in (sampling_api, sampling_kube):
+            if channel:
+                channel.close()
+        result["status"] = "finished"
+        save()
+        try:
+            if result.get("run_id"):
+                cancel_api(api, result["run_id"], registration)
+            for ref in reversed(result["resources"]):
+                delete_owned(kube, registration, ref)
+            descendants_absent(kube, registration, result["descendants"])
+            result["cleanup"] = ("submission_outcome_unknown" if result.get("submission_uncertain") else
+                                 "api_execution_context_unverified" if result.get("run_id") and parent is None else
+                                 "observed_objects_absent")
+        except Failure as error:
+            result["cleanup"] = str(error)
+        save()
+
+
+def trial(kube, registration, baseline, index, result, save, api=None):
+    implementation = measured_trial if registration["protocol"]["format_version"] == 3 else legacy_trial
+    return implementation(kube, registration, baseline, index, result, save, api)
+
+
 def register(args):
     protocol = read_json(args.protocol, 64 * 1024)
     validate_protocol(protocol)
@@ -908,7 +1236,12 @@ def register(args):
     require(not args.upstream_controller_ref or DIGEST.fullmatch(args.upstream_controller_ref), "upstream_controller_must_be_digest_pinned")
     require("agent-sandbox" not in {protocol["baseline"], protocol["candidate"]} or args.upstream_controller_ref,
             "upstream_controller_ref_required")
-    require(0.1 <= args.poll_seconds <= 10 and math.isfinite(args.poll_seconds), "poll_bounds")
+    measured = protocol["format_version"] == 3
+    period = protocol["observation_policy"]["period_seconds"] if measured else .5
+    poll_seconds = args.poll_seconds if args.poll_seconds is not None else period
+    require(type(poll_seconds) in (int, float) and math.isfinite(poll_seconds)
+            and (.01 if measured else .1) <= poll_seconds <= 10, "poll_bounds")
+    require(not measured or poll_seconds == period, "poll_must_match_observation_policy")
     require(workload["timeout_seconds"] <= args.trial_timeout_seconds <= 3900, "observer_timeout_bounds")
     directory = Path(args.evidence_dir)
     directory.mkdir(mode=0o700)
@@ -918,7 +1251,7 @@ def register(args):
                     "protocol": protocol, "protocol_sha256": digest(protocol), "workload": workload,
                     "workload_sha256": digest(workload), "environment": {
                         "reference": str(Path(args.environment).resolve()), "sha256": digest(environment)},
-                    "trial_count": trials, "poll_seconds": args.poll_seconds,
+                    "trial_count": trials, "poll_seconds": poll_seconds,
                     "trial_timeout_seconds": args.trial_timeout_seconds, "cache_state": args.cache_state,
                     "upstream_controller_ref": args.upstream_controller_ref}
     write_json(directory / "registration.json", registration, exclusive=True)
@@ -937,6 +1270,9 @@ def load_registration(args):
             and digest(registration["workload"]) == registration["workload_sha256"], "registration_digest_mismatch")
     validate_protocol(registration["protocol"])
     validate_workload(registration["workload"])
+    if registration["protocol"]["format_version"] == 3:
+        require(registration.get("poll_seconds") == registration["protocol"]["observation_policy"]["period_seconds"],
+                "poll_must_match_observation_policy")
     return directory, registration
 
 
@@ -961,8 +1297,13 @@ def collect(args):
               "timing_contract": timing_contract(args.baseline),
               "timing_boundary": "client submission start to observed terminal success and validated stdout",
               "readiness_boundary": "client submission start to first observed workload readiness log line"}
-    if registration["protocol"]["format_version"] == 2:
+    measured = registration["protocol"]["format_version"] == 3
+    kube = api = None
+    if registration["protocol"]["format_version"] >= 2:
         result["latency_policy"] = copy.deepcopy(registration["protocol"]["latency_policy"])
+    if measured:
+        result["observation_policy"] = copy.deepcopy(registration["protocol"]["observation_policy"])
+        result["measurement_transport"] = "private_unix_kubectl_proxy_persistent_http_channels"
     if args.baseline == "agent-sandbox":
         result.update({"baseline_provider": "aws-blueprint-compatible-upstream", "pool_replicas": 0,
                        "upstream_api_version": EXT, "upstream_contract_ref": "kubernetes-sigs/agent-sandbox@v1.0.1",
@@ -971,11 +1312,12 @@ def collect(args):
     try:
         write_json(path, result, exclusive=True)
         save = lambda: write_json(path, result)
-        api = AgentOS(args.api_url, args.token_env) if args.baseline == "agentos" else None
+        api = (PersistentAgentOS if measured else AgentOS)(args.api_url, args.token_env) if args.baseline == "agentos" else None
         if api:
             result["api_endpoint_sha256"] = digest(api.base)
             save()
-        kube = Kubectl(registration, args.token_env)
+        kube = (transport.KubernetesProxy(registration, args.token_env, failure_type=Failure).start()
+                if measured else Kubectl(registration, args.token_env))
         preflight(kube, registration, api)
         if args.baseline == "agent-sandbox":
             require(registration["upstream_controller_ref"], "upstream_controller_ref_required")
@@ -1012,6 +1354,10 @@ def collect(args):
         result["status"] = "failed"
         result["error"] = "unexpected_collection_failure"
     finally:
+        if measured:
+            for channel in (api, kube):
+                if channel:
+                    channel.close()
         result["finished_at"] = now()
         # Never overwrite an earlier arm, including its failed trials.
         if path.exists() and result.get("started_at") == read_json(path).get("started_at"):
@@ -1021,11 +1367,7 @@ def collect(args):
     return path
 
 
-def cleanup(args):
-    directory, registration = load_registration(args)
-    require(args.execute, "cleanup_requires_execute")
-    require(not (directory / ".collect.lock").exists(), "collection_lock_present")
-    kube = Kubectl(registration, args.token_env)
+def cleanup_contents(args, directory, registration, kube):
     unresolved = False
     for baseline in BASELINES:
         path = directory / (baseline + ".json")
@@ -1056,6 +1398,20 @@ def cleanup(args):
     return directory
 
 
+def cleanup(args):
+    directory, registration = load_registration(args)
+    require(args.execute, "cleanup_requires_execute")
+    require(not (directory / ".collect.lock").exists(), "collection_lock_present")
+    measured = registration["protocol"]["format_version"] == 3
+    kube = (transport.KubernetesProxy(registration, args.token_env, failure_type=Failure).start()
+            if measured else Kubectl(registration, args.token_env))
+    try:
+        return cleanup_contents(args, directory, registration, kube)
+    finally:
+        if measured:
+            kube.close()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1067,7 +1423,8 @@ def main(argv=None):
     registration.add_argument("--namespace", required=True)
     registration.add_argument("--evidence-dir", required=True, help="new directory, never a previous experiment")
     registration.add_argument("--trials", type=int)
-    registration.add_argument("--poll-seconds", type=float, default=0.5)
+    registration.add_argument("--poll-seconds", type=float, default=None,
+                              help="legacy default 0.5; v3 derives from and must match its observation policy")
     registration.add_argument("--trial-timeout-seconds", type=int, default=360)
     registration.add_argument("--cache-state", choices=("uncontrolled", "operator-declared-cached", "operator-declared-cold"), default="uncontrolled")
     registration.add_argument("--upstream-controller-ref", default="", help="digest-pinned installed controller image; declaration only")

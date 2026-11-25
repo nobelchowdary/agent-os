@@ -10,6 +10,8 @@ The [Job-controller timing follow-up](JOB_CONTROLLER_TIMING_2026-11-24.md) retai
 
 The timing report now also verifies the successful full regression at `6389b17` and corrects the interpretation of the historical polling denominator. The [comparison contract update](COMPARISON_CONTRACT_2026-11-24.md) implements [decision 0009](../decisions/0009-comparison-boundaries-and-latency-budget.md): keep Job authority, stop reporting-delay tuning, and prepare separate one-second/minute profiles with three observed boundaries and a caller-outcome allowance of baseline p95 × 1.10 + 2 seconds. Existing registered rules and the 20% cost / 25% operator-time benefit gate remain unchanged.
 
+The subsequent [observation-precision report](OBSERVATION_PRECISION_2026-11-24.md) and [decision 0010](../decisions/0010-comparison-observation-precision.md) address unequal collector polling. New format-3 pilots use shared transport, a fixed cadence and conservative outcome intervals; missing, coarse or gate-straddling evidence cannot pass latency. Run the separately registered direct-Job instrument check on the cluster before the upstream profiles. The format-1/format-2 records above remain historical, with no new EKS or competitive acceptance claimed.
+
 At audited commit `e2ed1a4`, 41 whole requirements were Partial and 29 Missing. No whole requirement was accepted as Implemented against its full requested acceptance test. These labels include the EKS evidence gate and do not erase narrower implemented features. All EKS outcomes remain Not run. Machine-readable records are in `audit-core.json`, `audit-security.json` and `audit-platform.json`; do not silently update this frozen baseline after code changes.
 
 | Phase | Status | Next acceptance work |
